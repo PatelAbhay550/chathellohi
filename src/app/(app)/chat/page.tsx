@@ -163,7 +163,7 @@ export default function ChatListPage() {
     if (chat.lastMessageFileType === 'image') icon = <ImageIcon className="mr-1.5 h-4 w-4 inline-block" />;
     else if (chat.lastMessageFileType) icon = <FileText className="mr-1.5 h-4 w-4 inline-block" />;
     
-    const lastMessageText = (chat.lastMessageText ?? '').length > 30 ? (chat.lastMessageText ?? '').substring(0, 30) + '...' : chat.lastMessageText ?? '';
+    const lastMessageText = (chat.lastMessageText ?? '').length > 18 ? (chat.lastMessageText ?? '').substring(0, 18) + '...' : chat.lastMessageText ?? '';
     return (
       <>
         <span className="font-normal">{prefix}</span>
