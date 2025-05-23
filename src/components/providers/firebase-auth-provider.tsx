@@ -2,27 +2,27 @@
 "use client";
 
 import type { ReactNode } from 'react';
-import React, { createContext, useEffect, useState } from 'react';
+import * as React from 'react'; // Changed import style
 import type { User } from 'firebase/auth';
-import { onAuthStateChanged, signOut } from 'firebase/auth'; // Added signOut for beforeunload
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth, db } from '@/lib/firebase';
-import { doc, getDoc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore'; // Added updateDoc, serverTimestamp
+import { doc, getDoc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
 import type { AuthContextType } from '@/hooks/use-auth';
 import type { UserProfile } from '@/types';
 
-export const AuthContext = createContext<AuthContextType | undefined>(undefined);
+export const AuthContext = React.createContext<AuthContextType | undefined>(undefined); // Used React.createContext
 
 interface FirebaseAuthProviderProps {
   children: ReactNode;
 }
 
 export const FirebaseAuthProvider = ({ children }: FirebaseAuthProviderProps): JSX.Element => {
-  const [user, setUser] = useState<User | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [isAuthenticating, setIsAuthenticating] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
+  const [user, setUser] = React.useState<User | null>(null); // Used React.useState
+  const [userProfile, setUserProfile] = React.useState<UserProfile | null>(null); // Used React.useState
+  const [isAuthenticating, setIsAuthenticating] = React.useState(true); // Used React.useState
+  const [error, setError] = React.useState<Error | null>(null); // Used React.useState
 
-  useEffect(() => {
+  React.useEffect(() => { // Used React.useEffect
     let profileUnsubscribe: (() => void) | undefined;
 
     const authUnsubscribe = onAuthStateChanged(
@@ -30,14 +30,13 @@ export const FirebaseAuthProvider = ({ children }: FirebaseAuthProviderProps): J
       async (currentUser) => {
         setUser(currentUser);
         if (profileUnsubscribe) {
-          profileUnsubscribe(); // Unsubscribe from previous profile listener if any
+          profileUnsubscribe(); 
           profileUnsubscribe = undefined;
         }
 
         if (currentUser) {
           const userDocRef = doc(db, "users", currentUser.uid);
           
-          // Set online status
           try {
             await updateDoc(userDocRef, { isOnline: true });
           } catch (e) {
@@ -62,8 +61,7 @@ export const FirebaseAuthProvider = ({ children }: FirebaseAuthProviderProps): J
             }
           );
         } else {
-          // User is signed out
-          if (userProfile?.uid) { // If there was a logged-in user, update their status
+          if (userProfile?.uid) { 
             const userDocRef = doc(db, "users", userProfile.uid);
             updateDoc(userDocRef, { isOnline: false, lastSeen: serverTimestamp() })
               .catch(e => console.warn("Could not set user offline on sign out:", e));
@@ -84,15 +82,9 @@ export const FirebaseAuthProvider = ({ children }: FirebaseAuthProviderProps): J
     const handleBeforeUnload = () => {
       if (auth.currentUser?.uid) {
         const userDocRef = doc(db, "users", auth.currentUser.uid);
-        // Firestore updates in 'beforeunload' are not guaranteed.
-        // For more reliable presence, Firebase Realtime Database is recommended.
-        // This is a best-effort attempt.
         navigator.sendBeacon(
             `/.netlify/functions/updateUserPresence?uid=${auth.currentUser.uid}&isOnline=false`
-            // A beacon to a serverless function would be more reliable, but for now, we'll try a direct update.
-            // This direct update might not complete, so we also update on explicit logout.
         );
-         // Attempt direct update, may not complete
         updateDoc(userDocRef, { isOnline: false, lastSeen: serverTimestamp() })
           .catch(e => console.warn("Best-effort offline update failed in beforeunload:", e));
       }
@@ -106,15 +98,13 @@ export const FirebaseAuthProvider = ({ children }: FirebaseAuthProviderProps): J
         profileUnsubscribe();
       }
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      // Ensure user is marked offline if the component unmounts while user is still authenticated
-      // This might happen on page navigation or hot-reloads during development
       if (auth.currentUser?.uid) {
          const userDocRef = doc(db, "users", auth.currentUser.uid);
          updateDoc(userDocRef, { isOnline: false, lastSeen: serverTimestamp() })
            .catch(e => console.warn("Best-effort offline update on unmount failed:", e));
       }
     };
-  }, [userProfile?.uid]); // Added userProfile.uid to dependencies to handle logout presence update correctly
+  }, [userProfile?.uid]); 
   
   const loading = isAuthenticating;
 

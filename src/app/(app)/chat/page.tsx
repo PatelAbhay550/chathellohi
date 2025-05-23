@@ -1,26 +1,38 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react'; // Added useMemo
 import Link from 'next/link';
-import { useRouter } from 'next/navigation'; 
+import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from '@/components/ui/button';
-import { MessageSquarePlus, Search, Loader2, Check, CheckCheck, FileText, Image as ImageIcon, Users } from 'lucide-react';
+import { MessageSquarePlus, Search, Loader2, Check, CheckCheck, FileText, Image as ImageIcon, Users, Trash2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import type { ChatRoom, UserProfile, ChatMessage } from '@/types';
 import { useAuth } from '@/hooks/use-auth';
 import { db } from '@/lib/firebase';
-import { collection, query, where, orderBy, onSnapshot, doc, getDoc, Timestamp } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot, doc, getDoc, Timestamp, getDocs, setDoc, serverTimestamp } from 'firebase/firestore';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/hooks/use-toast';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+
 
 interface DisplayChatRoom extends ChatRoom {
-  otherParticipant: UserProfile | null; // For P2P
-  displayImage?: string | null; // For group or P2P
-  displayName: string; // Group name or other user's name
-  lastMessageText?: string; 
+  otherParticipantProfile?: UserProfile | null; 
+  displayImage?: string | null;
+  displayName: string;
+  lastMessageText?: string;
   lastMessageTimestamp?: number;
   lastMessageStatus?: 'sent' | 'seen';
   lastMessageSenderId?: string;
@@ -30,35 +42,65 @@ interface DisplayChatRoom extends ChatRoom {
 
 export default function ChatListPage() {
   const { user } = useAuth();
-  const router = useRouter(); 
-  const [chats, setChats] = useState<DisplayChatRoom[]>([]);
+  const router = useRouter();
+  const { toast } = useToast();
+  const [rawChats, setRawChats] = useState<DisplayChatRoom[]>([]); // Store all chats before filtering
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [deletedChatIds, setDeletedChatIds] = useState<Set<string>>(new Set());
+  const [chatToDelete, setChatToDelete] = useState<DisplayChatRoom | null>(null);
+
 
   const getInitials = (name?: string) => name ? name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0,2) : 'U';
 
+  // useEffect for fetching deleted chat IDs
   useEffect(() => {
     if (!user) {
-      setIsLoading(false);
+      setDeletedChatIds(new Set()); // Clear if no user
       return;
     }
 
-    setIsLoading(true);
+    const deletedChatsQuery = query(collection(db, `users/${user.uid}/deleted_chats`));
+    const unsubscribeDeletedChats = onSnapshot(deletedChatsQuery, (snapshot) => {
+      const ids = new Set<string>();
+      snapshot.forEach((doc) => {
+        ids.add(doc.id);
+      });
+      setDeletedChatIds(ids);
+    }, (error) => {
+      console.error("Error fetching deleted chats:", error);
+      toast({ title: "Error", description: "Could not update list of deleted chats.", variant: "destructive"});
+    });
+
+    return () => unsubscribeDeletedChats();
+  }, [user, toast]);
+
+
+  // useEffect for fetching all raw chat rooms
+  useEffect(() => {
+    if (!user) {
+      setRawChats([]); // Clear chats if no user
+      setIsLoading(false); // Ensure loading is false if no user
+      return;
+    }
+
+    setIsLoading(true); // Set loading true when we start fetching for a new user
+
     const chatsQuery = query(
       collection(db, "chat_rooms"),
       where("participants", "array-contains", user.uid),
       orderBy("updatedAt", "desc")
     );
 
-    const unsubscribe = onSnapshot(chatsQuery, async (querySnapshot) => {
-      const fetchedChats: DisplayChatRoom[] = [];
+    const unsubscribeChats = onSnapshot(chatsQuery, async (querySnapshot) => {
+      const fetchedChatsData: DisplayChatRoom[] = [];
       for (const chatDoc of querySnapshot.docs) {
         const chatRoomData = chatDoc.data() as ChatRoom;
-        chatRoomData.id = chatDoc.id; 
-        
+        chatRoomData.id = chatDoc.id;
+
         chatRoomData.createdAt = (chatRoomData.createdAt as unknown as Timestamp)?.toMillis?.() || chatRoomData.createdAt || Date.now();
         chatRoomData.updatedAt = (chatRoomData.updatedAt as unknown as Timestamp)?.toMillis?.() || chatRoomData.updatedAt || Date.now();
-        
+
         let lastMessagePreview: string | undefined;
         let lastMessageTimestamp: number | undefined;
         let lastMessageStatus: 'sent' | 'seen' | undefined;
@@ -83,33 +125,51 @@ export default function ChatListPage() {
              }
         }
 
-        let otherParticipantProfile: UserProfile | null = null;
+        let otherParticipantProfileData: UserProfile | null = null;
         let displayName = chatRoomData.groupName || 'Chat';
         let displayImage = chatRoomData.groupImage || null;
 
         if (!chatRoomData.isGroup) {
             const otherParticipantId = chatRoomData.participants.find(pId => pId !== user.uid);
             if (otherParticipantId) {
-              const userDocRef = doc(db, "users", otherParticipantId);
-              const userDocSnap = await getDoc(userDocRef);
-              if (userDocSnap.exists()) {
-                otherParticipantProfile = { uid: userDocSnap.id, ...userDocSnap.data() } as UserProfile;
-                displayName = otherParticipantProfile.name || 'Unknown User';
-                displayImage = otherParticipantProfile.profileImageUrl;
+              const denormalizedDetails = chatRoomData.participantDetails?.[otherParticipantId];
+              if (denormalizedDetails && denormalizedDetails.name) {
+                otherParticipantProfileData = {
+                  uid: otherParticipantId,
+                  name: denormalizedDetails.name,
+                  profileImageUrl: denormalizedDetails.profileImageUrl,
+                  email: '', 
+                  username: '', 
+                };
+                displayName = denormalizedDetails.name;
+                displayImage = denormalizedDetails.profileImageUrl;
               } else {
-                displayName = 'Unknown User';
+                try {
+                    const userDocRef = doc(db, "users", otherParticipantId);
+                    const userDocSnap = await getDoc(userDocRef);
+                    if (userDocSnap.exists()) {
+                    otherParticipantProfileData = { uid: userDocSnap.id, ...userDocSnap.data() } as UserProfile;
+                    displayName = otherParticipantProfileData.name || 'Unknown User';
+                    displayImage = otherParticipantProfileData.profileImageUrl;
+                    } else {
+                    displayName = 'Unknown User';
+                    }
+                } catch (fetchError) {
+                    console.warn(`Failed to fetch profile for ${otherParticipantId}:`, fetchError);
+                    displayName = 'Error Loading User';
+                }
               }
             } else {
-                 displayName = 'Chat with deleted user'; // Or some other placeholder
+                 displayName = 'Chat with deleted user';
             }
         }
-        
-        fetchedChats.push({
+
+        fetchedChatsData.push({
           ...chatRoomData,
-          otherParticipant: otherParticipantProfile,
+          otherParticipantProfile: otherParticipantProfileData,
           displayName: displayName,
           displayImage: displayImage,
-          lastMessageText: lastMessagePreview, 
+          lastMessageText: lastMessagePreview,
           lastMessageTimestamp: lastMessageTimestamp,
           lastMessageStatus: lastMessageStatus,
           lastMessageSenderId: lastMessageSenderId,
@@ -117,23 +177,30 @@ export default function ChatListPage() {
           lastMessageFileName: lastMessageFileName,
         });
       }
-      setChats(fetchedChats);
+      setRawChats(fetchedChatsData);
       setIsLoading(false);
     }, (error) => {
       console.error("Error fetching chats:", error);
       setIsLoading(false);
+      toast({ title: "Error loading chats", description: error.message, variant: "destructive" });
     });
 
-    return () => unsubscribe();
-  }, [user]);
+    return () => unsubscribeChats();
+  }, [user, toast]); // Removed deletedChatIds from here
 
-  const filteredChats = chats.filter(chat => {
-    const nameMatch = chat.displayName?.toLowerCase().includes(searchTerm.toLowerCase());
-    const messageMatch = chat.lastMessageText?.toLowerCase().includes(searchTerm.toLowerCase());
-    // If P2P, also search by other participant's username
-    const usernameMatch = !chat.isGroup && chat.otherParticipant?.username?.toLowerCase().includes(searchTerm.toLowerCase());
-    return nameMatch || messageMatch || usernameMatch;
-  });
+  const activeChats = useMemo(() => {
+    return rawChats.filter(chat => !deletedChatIds.has(chat.id));
+  }, [rawChats, deletedChatIds]);
+
+  const filteredChats = useMemo(() => {
+    return activeChats.filter(chat => {
+        const nameMatch = chat.displayName?.toLowerCase().includes(searchTerm.toLowerCase());
+        const messageMatch = chat.lastMessageText?.toLowerCase().includes(searchTerm.toLowerCase());
+        const usernameMatch = !chat.isGroup && chat.otherParticipantProfile?.username?.toLowerCase().includes(searchTerm.toLowerCase());
+        return nameMatch || messageMatch || usernameMatch;
+    });
+  }, [activeChats, searchTerm]);
+
 
   const formatLastMessageTime = (timestamp?: number) => {
     if (!timestamp) return '';
@@ -142,19 +209,19 @@ export default function ChatListPage() {
     if (date.getFullYear() === today.getFullYear() &&
         date.getMonth() === today.getMonth() &&
         date.getDate() === today.getDate()) {
-      return format(date, 'p'); 
+      return format(date, 'p');
     }
-    return format(date, 'MMM d'); 
+    return format(date, 'MMM d');
   };
 
   const renderLastMessagePreview = (chat: DisplayChatRoom) => {
     if (!chat.lastMessageText && !chat.lastMessageFileType) return 'No messages yet';
-    
+
     let prefix = "";
     if(chat.isGroup && chat.lastMessageSenderId && chat.lastMessageSenderId !== user?.uid) {
-        const sender = chat.participantDetails?.[chat.lastMessageSenderId]?.name?.split(' ')[0] || "Someone";
-        prefix = `${sender}: `;
-    } else if (chat.isGroup && chat.lastMessageSenderId === user?.uid) {
+        const senderName = chat.participantDetails?.[chat.lastMessageSenderId]?.name?.split(' ')[0] || chat.lastMessage?.senderName?.split(' ')[0] || "Someone";
+        prefix = `${senderName}: `;
+    } else if (chat.lastMessageSenderId === user?.uid) {
         prefix = "You: ";
     }
 
@@ -162,7 +229,7 @@ export default function ChatListPage() {
     let icon = null;
     if (chat.lastMessageFileType === 'image') icon = <ImageIcon className="mr-1.5 h-4 w-4 inline-block" />;
     else if (chat.lastMessageFileType) icon = <FileText className="mr-1.5 h-4 w-4 inline-block" />;
-    
+
     return (
       <>
         <span className="font-normal">{prefix}</span>
@@ -170,6 +237,19 @@ export default function ChatListPage() {
         <span className={cn({"italic": !!chat.lastMessageFileType})}>{chat.lastMessageText || 'Attachment'}</span>
       </>
     );
+  };
+
+  const handleDeleteChatForSelf = async (chatId: string) => {
+    if (!user || !chatId) return;
+    try {
+      const deletedChatRef = doc(db, `users/${user.uid}/deleted_chats/${chatId}`);
+      await setDoc(deletedChatRef, { deletedAt: serverTimestamp() });
+      toast({ title: "Chat Hidden", description: "This chat has been removed from your list." });
+      setChatToDelete(null); 
+    } catch (error) {
+      console.error("Error deleting chat for self:", error);
+      toast({ title: "Error", description: "Could not hide chat.", variant: "destructive" });
+    }
   };
 
   return (
@@ -195,7 +275,7 @@ export default function ChatListPage() {
 
       <Card className="shadow-lg">
         <CardHeader>
-          <Input 
+          <Input
             type="search"
             placeholder="Search by name, username, or message..."
             value={searchTerm}
@@ -212,10 +292,10 @@ export default function ChatListPage() {
                 <p className="ml-2">Loading chats...</p>
             </div>
           ) : filteredChats.length > 0 ? (
-            <ul className="space-y-3">
+            <ul className="space-y-1">
               {filteredChats.map((chat) => (
-                <li key={chat.id}>
-                  <Link href={`/chat/${chat.id}`} className="block p-3 rounded-lg hover:bg-accent transition-colors">
+                <li key={chat.id} className="group relative rounded-lg hover:bg-accent transition-colors">
+                  <Link href={`/chat/${chat.id}`} className="block p-3">
                     <div className="flex items-center space-x-3">
                        <Avatar className="h-12 w-12 border-2 border-primary">
                           <AvatarImage src={chat.displayImage || undefined} alt={chat.displayName} data-ai-hint={chat.isGroup ? "group avatar" : "avatar profile"} />
@@ -224,9 +304,14 @@ export default function ChatListPage() {
                           </AvatarFallback>
                         </Avatar>
                       <div className="flex-1 min-w-0">
-                         <p className="font-semibold text-foreground truncate">
-                               {chat.displayName}
-                         </p>
+                        <div className="flex items-center justify-between">
+                           <p className="font-semibold text-foreground truncate">
+                                 {chat.displayName}
+                           </p>
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              {formatLastMessageTime(chat.lastMessageTimestamp)}
+                            </span>
+                         </div>
                         <div className="flex items-center text-sm text-muted-foreground">
                            {chat.lastMessageSenderId === user?.uid && chat.lastMessageStatus && (
                             <span className="mr-1">
@@ -234,19 +319,23 @@ export default function ChatListPage() {
                               {chat.lastMessageStatus === 'seen' && <CheckCheck className="h-4 w-4 text-blue-500" />}
                             </span>
                           )}
-                          <p className="truncate">{renderLastMessagePreview(chat)}</p>
+                          <p className="truncate flex-1">{renderLastMessagePreview(chat)}</p>
+                          {chat.lastMessageSenderId !== user?.uid && chat.lastMessageStatus !== 'seen' && (
+                            <span className="ml-auto h-2.5 w-2.5 rounded-full bg-primary animate-pulse flex-shrink-0" title="Unread message"></span>
+                          )}
                         </div>
-                      </div>
-                      <div className="flex flex-col items-end space-y-1">
-                        <span className="text-xs text-muted-foreground whitespace-nowrap">
-                          {formatLastMessageTime(chat.lastMessageTimestamp)}
-                        </span>
-                        {chat.lastMessageSenderId !== user?.uid && chat.lastMessageStatus !== 'seen' && (
-                          <span className="h-2.5 w-2.5 rounded-full bg-primary animate-pulse" title="Unread message"></span>
-                        )}
                       </div>
                     </div>
                   </Link>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="absolute top-1/2 right-2 -translate-y-1/2 h-7 w-7 opacity-0 group-hover:opacity-100 focus-within:opacity-100 text-muted-foreground hover:text-destructive"
+                    onClick={(e) => { e.stopPropagation(); setChatToDelete(chat); }}
+                    title="Delete chat for yourself"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -257,6 +346,25 @@ export default function ChatListPage() {
           )}
         </CardContent>
       </Card>
+
+       {chatToDelete && (
+        <AlertDialog open={!!chatToDelete} onOpenChange={(open) => !open && setChatToDelete(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Chat: {chatToDelete.displayName}?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will remove the chat from your list only. Other participants will still see the chat. This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={() => setChatToDelete(null)}>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={() => handleDeleteChatForSelf(chatToDelete.id)} className="bg-destructive hover:bg-destructive/90">
+                Delete for Me
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </div>
   );
 }
@@ -266,3 +374,4 @@ declare module "@/components/ui/input" {
     icon?: React.ReactNode;
   }
 }
+    

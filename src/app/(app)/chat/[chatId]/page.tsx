@@ -34,7 +34,7 @@ import {
 } from "@/components/ui/alert-dialog";
 
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from '@/components/ui/sheet';
-import { ArrowLeft, Send, Paperclip, Loader2, Check, CheckCheck, FileText, Image as ImageIconLucide, XCircle, Music2, Video, MoreVertical, UserX, UserCheck, ShieldAlert, MoreHorizontal, Pin, PinOff, Edit2, Trash2, CornerDownLeft, MessageCircle, Quote, Users, UserPlus, LogOutIcon, Crown, UserMinus, Search, Smile, Palette, ImagePlus } from 'lucide-react';
+import { ArrowLeft, Send, Paperclip, Loader2, Check, CheckCheck, FileText, Image as ImageIconLucide, XCircle, Music2, Video, MoreVertical, UserX, UserCheck, ShieldAlert, MoreHorizontal, Pin, PinOff, Edit2, Trash2, CornerDownLeft, Quote, Users, UserPlus, LogOutIcon, Crown, UserMinus, Search, Palette, ImagePlus } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import type { ChatMessage, UserProfile, ChatRoom, ChatMessageReportSnippet, ChatMessageReplySnippet } from '@/types';
 import { cn } from '@/lib/utils';
@@ -57,7 +57,8 @@ import {
   limit,
   deleteField,
   where,
-  documentId
+  documentId,
+  setDoc, // Added for deleting chat for self
 } from 'firebase/firestore';
 import { ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import { useToast } from '@/hooks/use-toast';
@@ -1150,6 +1151,19 @@ export default function ChatPage() {
     );
   };
 
+  const handleDeleteChatForSelf = async () => {
+    if (!user || !chatId) return;
+    try {
+      const deletedChatRef = doc(db, `users/${user.uid}/deleted_chats/${chatId}`);
+      await setDoc(deletedChatRef, { deletedAt: serverTimestamp() });
+      toast({ title: "Chat Deleted", description: "This chat has been removed from your list." });
+      router.push('/chat');
+    } catch (error) {
+      console.error("Error deleting chat for self:", error);
+      toast({ title: "Error", description: "Could not delete chat.", variant: "destructive" });
+    }
+  };
+
   if (isLoading && !messages.length) { 
     return (
       <div className="flex flex-col h-full items-center justify-center p-4">
@@ -1273,6 +1287,28 @@ export default function ChatPage() {
                             </AlertDialogFooter>
                         </AlertDialogContent>
                     </AlertDialog>
+                     <DropdownMenuSeparator />
+                     <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                            <DropdownMenuItem className="text-destructive focus:text-destructive focus:bg-destructive/10" onSelect={e => e.preventDefault()}>
+                                <Trash2 className="mr-2 h-4 w-4" /> Delete Chat
+                            </DropdownMenuItem>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                            <AlertDialogHeader>
+                                <AlertDialogTitle>Delete Chat for Yourself?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                    This will remove the chat from your list only. Other participants will still see the chat. This action cannot be undone.
+                                </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction onClick={handleDeleteChatForSelf} className="bg-destructive hover:bg-destructive/90">
+                                    Delete for Me
+                                </AlertDialogAction>
+                            </AlertDialogFooter>
+                        </AlertDialogContent>
+                    </AlertDialog>
                     {chatRoomData?.isGroup && (
                         <>
                         <DropdownMenuSeparator />
@@ -1313,7 +1349,7 @@ export default function ChatPage() {
             </div>
              {chatRoomData.pinnedMessage.pinnedUntil && typeof chatRoomData.pinnedMessage.pinnedUntil === 'number' && (
                 <p className="text-xs text-primary/70 text-right mt-0.5">
-                    Pinned until: {format(new Date(chatRoomData.pinnedMessage.pinnedUntil), 'MMM d, HH:mm')}
+                    Pinned until: {format(new Date(chatRoomData.pinnedMessage.pinnedUntil as number), 'MMM d, HH:mm')}
                 </p>
             )}
         </div>
@@ -1384,7 +1420,7 @@ export default function ChatPage() {
                         {isOwnMessage && msg.status && (
                            <span className="ml-1.5">
                                 {msg.status === 'sent' && <Check className="h-3.5 w-3.5 opacity-70" />}
-                                {msg.status === 'seen' && <CheckCheck className="h-3.5 w-3.5" />}
+                                {msg.status === 'seen' && <CheckCheck className="h-3.5 w-3.5" />} {/* Inherits color */}
                            </span>
                         )}
                     </div>
@@ -1404,7 +1440,7 @@ export default function ChatPage() {
                             
                             <DropdownMenuSub>
                                 <DropdownMenuSubTrigger>
-                                   <Smile className="mr-2 h-4 w-4" /> React
+                                   <ImageIconLucide className="mr-2 h-4 w-4" /> React {/* Changed icon to avoid confusion */}
                                 </DropdownMenuSubTrigger>
                                 <DropdownMenuPortal>
                                 <DropdownMenuSubContent className="flex gap-1 p-1">
@@ -1428,7 +1464,7 @@ export default function ChatPage() {
                                 <Edit2 className="mr-2 h-4 w-4" /> Edit
                                 </DropdownMenuItem>
                             )}
-                             {(msg.senderId === user.uid || (chatRoomData?.isGroup && chatRoomData.admins?.includes(user.uid))) && ( 
+                             {(msg.senderId === user.uid || (isChatAdmin)) && ( 
                                 <>
                                 {chatRoomData?.pinnedMessage?.id === msg.id ? (
                                     <DropdownMenuItem onClick={() => handleUnpinMessage()} className="text-amber-600 focus:text-amber-700">
