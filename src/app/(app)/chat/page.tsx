@@ -3,11 +3,11 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation'; // Added
+import { useRouter } from 'next/navigation'; 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from '@/components/ui/button';
-import { MessageSquarePlus, Search, Loader2, Check, CheckCheck, FileText, Image as ImageIcon } from 'lucide-react';
+import { MessageSquarePlus, Search, Loader2, Check, CheckCheck, FileText, Image as ImageIcon, Users } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import type { ChatRoom, UserProfile, ChatMessage } from '@/types';
 import { useAuth } from '@/hooks/use-auth';
@@ -17,7 +17,9 @@ import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 
 interface DisplayChatRoom extends ChatRoom {
-  otherParticipant: UserProfile | null;
+  otherParticipant: UserProfile | null; // For P2P
+  displayImage?: string | null; // For group or P2P
+  displayName: string; // Group name or other user's name
   lastMessageText?: string; 
   lastMessageTimestamp?: number;
   lastMessageStatus?: 'sent' | 'seen';
@@ -28,7 +30,7 @@ interface DisplayChatRoom extends ChatRoom {
 
 export default function ChatListPage() {
   const { user } = useAuth();
-  const router = useRouter(); // Added
+  const router = useRouter(); 
   const [chats, setChats] = useState<DisplayChatRoom[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -64,7 +66,6 @@ export default function ChatListPage() {
         let lastMessageFileType: ChatMessage['fileType'] | undefined;
         let lastMessageFileName: string | undefined;
 
-
         if (chatRoomData.lastMessage) {
              chatRoomData.lastMessage.timestamp = (chatRoomData.lastMessage.timestamp as unknown as Timestamp)?.toMillis?.() || chatRoomData.lastMessage.timestamp;
              lastMessageTimestamp = chatRoomData.lastMessage.timestamp as number;
@@ -82,21 +83,32 @@ export default function ChatListPage() {
              }
         }
 
-
-        const otherParticipantId = chatRoomData.participants.find(pId => pId !== user.uid);
         let otherParticipantProfile: UserProfile | null = null;
+        let displayName = chatRoomData.groupName || 'Chat';
+        let displayImage = chatRoomData.groupImage || null;
 
-        if (otherParticipantId) {
-          const userDocRef = doc(db, "users", otherParticipantId);
-          const userDocSnap = await getDoc(userDocRef);
-          if (userDocSnap.exists()) {
-            otherParticipantProfile = { uid: userDocSnap.id, ...userDocSnap.data() } as UserProfile;
-          }
+        if (!chatRoomData.isGroup) {
+            const otherParticipantId = chatRoomData.participants.find(pId => pId !== user.uid);
+            if (otherParticipantId) {
+              const userDocRef = doc(db, "users", otherParticipantId);
+              const userDocSnap = await getDoc(userDocRef);
+              if (userDocSnap.exists()) {
+                otherParticipantProfile = { uid: userDocSnap.id, ...userDocSnap.data() } as UserProfile;
+                displayName = otherParticipantProfile.name || 'Unknown User';
+                displayImage = otherParticipantProfile.profileImageUrl;
+              } else {
+                displayName = 'Unknown User';
+              }
+            } else {
+                 displayName = 'Chat with deleted user'; // Or some other placeholder
+            }
         }
         
         fetchedChats.push({
           ...chatRoomData,
           otherParticipant: otherParticipantProfile,
+          displayName: displayName,
+          displayImage: displayImage,
           lastMessageText: lastMessagePreview, 
           lastMessageTimestamp: lastMessageTimestamp,
           lastMessageStatus: lastMessageStatus,
@@ -116,10 +128,11 @@ export default function ChatListPage() {
   }, [user]);
 
   const filteredChats = chats.filter(chat => {
-    const nameMatch = chat.otherParticipant?.name?.toLowerCase().includes(searchTerm.toLowerCase());
-    const usernameMatch = chat.otherParticipant?.username?.toLowerCase().includes(searchTerm.toLowerCase());
+    const nameMatch = chat.displayName?.toLowerCase().includes(searchTerm.toLowerCase());
     const messageMatch = chat.lastMessageText?.toLowerCase().includes(searchTerm.toLowerCase());
-    return nameMatch || usernameMatch || messageMatch;
+    // If P2P, also search by other participant's username
+    const usernameMatch = !chat.isGroup && chat.otherParticipant?.username?.toLowerCase().includes(searchTerm.toLowerCase());
+    return nameMatch || messageMatch || usernameMatch;
   });
 
   const formatLastMessageTime = (timestamp?: number) => {
@@ -137,12 +150,22 @@ export default function ChatListPage() {
   const renderLastMessagePreview = (chat: DisplayChatRoom) => {
     if (!chat.lastMessageText && !chat.lastMessageFileType) return 'No messages yet';
     
+    let prefix = "";
+    if(chat.isGroup && chat.lastMessageSenderId && chat.lastMessageSenderId !== user?.uid) {
+        const sender = chat.participantDetails?.[chat.lastMessageSenderId]?.name?.split(' ')[0] || "Someone";
+        prefix = `${sender}: `;
+    } else if (chat.isGroup && chat.lastMessageSenderId === user?.uid) {
+        prefix = "You: ";
+    }
+
+
     let icon = null;
     if (chat.lastMessageFileType === 'image') icon = <ImageIcon className="mr-1.5 h-4 w-4 inline-block" />;
     else if (chat.lastMessageFileType) icon = <FileText className="mr-1.5 h-4 w-4 inline-block" />;
     
     return (
       <>
+        <span className="font-normal">{prefix}</span>
         {icon}
         <span className={cn({"italic": !!chat.lastMessageFileType})}>{chat.lastMessageText || 'Attachment'}</span>
       </>
@@ -156,11 +179,18 @@ export default function ChatListPage() {
           <h1 className="text-3xl font-bold tracking-tight text-foreground">Your Chats</h1>
           <p className="text-muted-foreground">Continue your conversations or start new ones.</p>
         </div>
-        <Button asChild className="w-full sm:w-auto">
-          <Link href="/search">
-            <MessageSquarePlus className="mr-2 h-4 w-4" /> New Chat
-          </Link>
-        </Button>
+        <div className="flex gap-2 w-full sm:w-auto">
+            <Button asChild className="flex-1 sm:flex-none">
+              <Link href="/search">
+                <MessageSquarePlus className="mr-2 h-4 w-4" /> New Chat
+              </Link>
+            </Button>
+             <Button asChild variant="outline" className="flex-1 sm:flex-none">
+              <Link href="/chat/new-group">
+                <Users className="mr-2 h-4 w-4" /> New Group
+              </Link>
+            </Button>
+        </div>
       </header>
 
       <Card className="shadow-lg">
@@ -187,52 +217,16 @@ export default function ChatListPage() {
                 <li key={chat.id}>
                   <Link href={`/chat/${chat.id}`} className="block p-3 rounded-lg hover:bg-accent transition-colors">
                     <div className="flex items-center space-x-3">
-                      {chat.otherParticipant && (
-                        <div 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            router.push(`/profile/${chat.otherParticipant!.uid}`);
-                          }}
-                          onKeyDown={(e) => {
-                             if (e.key === 'Enter' || e.key === ' ') {
-                               e.stopPropagation();
-                               router.push(`/profile/${chat.otherParticipant!.uid}`);
-                             }
-                          }}
-                          className="relative z-10 cursor-pointer"
-                          role="link"
-                          tabIndex={0}
-                        >
-                          <Avatar className="h-12 w-12 border-2 border-primary hover:opacity-80 transition-opacity">
-                            <AvatarImage src={chat.otherParticipant?.profileImageUrl} alt={chat.otherParticipant?.name} data-ai-hint="avatar profile" />
-                            <AvatarFallback className="bg-muted text-muted-foreground">
-                              {getInitials(chat.otherParticipant?.name)}
-                            </AvatarFallback>
-                          </Avatar>
-                        </div>
-                      )}
+                       <Avatar className="h-12 w-12 border-2 border-primary">
+                          <AvatarImage src={chat.displayImage || undefined} alt={chat.displayName} data-ai-hint={chat.isGroup ? "group avatar" : "avatar profile"} />
+                          <AvatarFallback className="bg-muted text-muted-foreground">
+                            {chat.isGroup ? <Users className="h-5 w-5" /> : getInitials(chat.displayName)}
+                          </AvatarFallback>
+                        </Avatar>
                       <div className="flex-1 min-w-0">
-                         {chat.otherParticipant ? (
-                            <div 
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                router.push(`/profile/${chat.otherParticipant!.uid}`);
-                              }}
-                              onKeyDown={(e) => {
-                                 if (e.key === 'Enter' || e.key === ' ') {
-                                   e.stopPropagation();
-                                   router.push(`/profile/${chat.otherParticipant!.uid}`);
-                                 }
-                              }}
-                              className="font-semibold text-foreground truncate cursor-pointer hover:underline"
-                              role="link"
-                              tabIndex={0}
-                            >
-                               {chat.otherParticipant.name || 'Unknown User'}
-                            </div>
-                         ) : (
-                            <p className="font-semibold text-foreground truncate">Unknown User</p>
-                         )}
+                         <p className="font-semibold text-foreground truncate">
+                               {chat.displayName}
+                         </p>
                         <div className="flex items-center text-sm text-muted-foreground">
                            {chat.lastMessageSenderId === user?.uid && chat.lastMessageStatus && (
                             <span className="mr-1">
