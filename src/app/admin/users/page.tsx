@@ -19,8 +19,8 @@ import {
 } from "@/components/ui/table";
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Users } from 'lucide-react';
-import { format, formatDistanceToNowStrict } from 'date-fns';
+import { Loader2, Users, CalendarClock } from 'lucide-react';
+import { format, formatDistanceToNowStrict, isValid } from 'date-fns';
 import { UserTableActions } from '@/components/admin/user-table-actions';
 import { cn } from '@/lib/utils'; 
 
@@ -40,13 +40,12 @@ export default function AdminUsersPage() {
       const fetchedUsers: UserProfile[] = [];
       querySnapshot.forEach((doc) => {
         const userData = doc.data();
-        // Ensure createdAt is a serializable format (e.g., toMillis or keep as Timestamp if UserProfile type expects it)
         const profile = { 
           uid: doc.id, 
           ...userData,
-          // Convert Firestore Timestamp to number if needed for date-fns or general use
           createdAt: userData.createdAt instanceof Timestamp ? userData.createdAt.toMillis() : userData.createdAt,
           disabledUntil: userData.disabledUntil instanceof Timestamp ? userData.disabledUntil.toMillis() : userData.disabledUntil,
+          lastLoginAt: userData.lastLoginAt instanceof Timestamp ? userData.lastLoginAt.toMillis() : userData.lastLoginAt,
         } as UserProfile;
         fetchedUsers.push(profile);
       });
@@ -55,7 +54,6 @@ export default function AdminUsersPage() {
     }, (error) => {
       console.error("Error fetching users:", error);
       setIsLoading(false);
-      // Add toast notification for error
     });
 
     return () => unsubscribe();
@@ -63,13 +61,12 @@ export default function AdminUsersPage() {
 
   const getInitials = (name?: string) => name ? name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0,2) : 'U';
 
-  const formatDisabledUntil = (timestamp: UserProfile['disabledUntil']) => {
+  const formatUserTimestamp = (timestamp: UserProfile['disabledUntil'] | UserProfile['lastLoginAt']) => {
     if (!timestamp) return 'N/A';
     let date: Date;
-    // Timestamp might already be number if converted from Firestore Timestamp.toMillis()
     if (typeof timestamp === 'number') {
       date = new Date(timestamp);
-    } else if (timestamp instanceof Timestamp) { // Should not happen if converted above
+    } else if (timestamp instanceof Timestamp) { 
       date = timestamp.toDate();
     } else if (typeof timestamp === 'string') {
       date = new Date(timestamp);
@@ -77,10 +74,8 @@ export default function AdminUsersPage() {
       return 'Invalid Date';
     }
     
-    if (date > new Date()) {
-      return `${format(date, "MMM d, yyyy HH:mm")} (${formatDistanceToNowStrict(date, { addSuffix: true })})`;
-    }
-    return 'Ended';
+    if (!isValid(date)) return 'Invalid Date';
+    return `${format(date, "MMM d, yyyy HH:mm")} (${formatDistanceToNowStrict(date, { addSuffix: true })})`;
   };
 
 
@@ -108,7 +103,7 @@ export default function AdminUsersPage() {
         <CardHeader>
           <CardTitle>All Users ({users.length})</CardTitle>
           <CardDescription>
-            List of all users in the system. Admins can temporarily disable user accounts.
+            List of all users. Admins can temporarily disable or permanently ban user accounts.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -120,6 +115,7 @@ export default function AdminUsersPage() {
                 <TableHead>Username</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Last Login</TableHead>
                 <TableHead>Disabled Until</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -127,16 +123,27 @@ export default function AdminUsersPage() {
             <TableBody>
               {users.length === 0 && !isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
                     No users found.
                   </TableCell>
                 </TableRow>
               ) : (
                 users.map((user) => {
                   const disabledUntilDate = user.disabledUntil ? 
-                                          (typeof user.disabledUntil === 'number' ? new Date(user.disabledUntil) : (user.disabledUntil as Timestamp).toDate()) 
+                                          (typeof user.disabledUntil === 'number' ? new Date(user.disabledUntil) : (user.disabledUntil as Timestamp)?.toDate?.()) 
                                           : null;
-                  const isEffectivelyDisabled = user.isDisabled && disabledUntilDate && disabledUntilDate > new Date();
+                  const isTemporarilyDisabled = user.isDisabled && !user.isPermanentlyBanned && disabledUntilDate && isValid(disabledUntilDate) && disabledUntilDate > new Date();
+                  
+                  let statusBadge;
+                  if (user.isPermanentlyBanned) {
+                    statusBadge = <Badge variant="destructive" className="bg-red-700 hover:bg-red-800">Banned</Badge>;
+                  } else if (user.isAdmin) {
+                    statusBadge = <Badge variant="default" className="bg-purple-500 hover:bg-purple-600">Admin</Badge>;
+                  } else if (isTemporarilyDisabled) {
+                    statusBadge = <Badge variant="destructive">Disabled</Badge>;
+                  } else {
+                    statusBadge = <Badge variant="secondary" className="bg-green-500 hover:bg-green-600 text-white">Active</Badge>;
+                  }
                   
                   return (
                     <TableRow 
@@ -158,17 +165,12 @@ export default function AdminUsersPage() {
                       </TableCell>
                       <TableCell className="text-muted-foreground">@{user.username || 'N/A'}</TableCell>
                       <TableCell className="text-muted-foreground">{user.email}</TableCell>
-                      <TableCell>
-                        {user.isAdmin ? (
-                           <Badge variant="default" className="bg-purple-500 hover:bg-purple-600">Admin</Badge>
-                        ) : isEffectivelyDisabled ? (
-                          <Badge variant="destructive">Disabled</Badge>
-                        ) : (
-                          <Badge variant="secondary" className="bg-green-500 hover:bg-green-600 text-white">Active</Badge>
-                        )}
+                      <TableCell>{statusBadge}</TableCell>
+                       <TableCell className="text-xs text-muted-foreground">
+                        {user.lastLoginAt ? formatUserTimestamp(user.lastLoginAt) : 'Never'}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {isEffectivelyDisabled ? formatDisabledUntil(user.disabledUntil) : 'N/A'}
+                        {isTemporarilyDisabled ? formatUserTimestamp(user.disabledUntil) : 'N/A'}
                       </TableCell>
                       <TableCell className="text-right">
                         <UserTableActions user={user} currentAdminId={currentAdmin?.uid} />

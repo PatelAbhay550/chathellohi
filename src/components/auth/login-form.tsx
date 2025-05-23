@@ -20,7 +20,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
-import { doc, getDoc, Timestamp } from 'firebase/firestore';
+import { doc, getDoc, Timestamp, updateDoc, serverTimestamp } from 'firebase/firestore'; // Added updateDoc, serverTimestamp
 import type { UserProfile } from '@/types';
 import { format } from 'date-fns';
 
@@ -49,12 +49,24 @@ export function LoginForm() {
       const userCredential = await signInWithEmailAndPassword(auth, values.email, values.password);
       const firebaseUser = userCredential.user;
 
-      // Fetch user profile from Firestore
       const userDocRef = doc(db, "users", firebaseUser.uid);
       const userDocSnap = await getDoc(userDocRef);
 
       if (userDocSnap.exists()) {
         const userProfile = userDocSnap.data() as UserProfile;
+
+        if (userProfile.isPermanentlyBanned) {
+          toast({
+            title: 'Account Banned',
+            description: 'Your account has been permanently banned. Please contact support.',
+            variant: 'destructive',
+            duration: 10000,
+          });
+          await signOut(auth);
+          setIsLoading(false);
+          return;
+        }
+
         if (userProfile.isDisabled) {
           const now = Timestamp.now();
           let disabledUntilDate: Date | null = null;
@@ -75,10 +87,10 @@ export function LoginForm() {
               variant: 'destructive',
               duration: 10000,
             });
-            await signOut(auth); // Sign out the user
+            await signOut(auth); 
             setIsLoading(false);
             return;
-          } else if (!disabledUntilDate) { // Permanently disabled (or no end date set)
+          } else if (!disabledUntilDate && userProfile.isDisabled) { // isDisabled but no end date (implies error or different type of disable)
              toast({
               title: 'Account Disabled',
               description: `Your account is disabled. Please contact support.`,
@@ -91,9 +103,14 @@ export function LoginForm() {
           }
           // If disabledUntil is in the past, allow login (implicitly enable)
         }
+        // Update lastLoginAt on successful login if not banned/disabled
+        await updateDoc(userDocRef, { lastLoginAt: serverTimestamp(), isOnline: true });
+
       } else {
-        // This case should ideally not happen for an existing user
         console.warn("User profile not found on login for UID:", firebaseUser.uid);
+        // Potentially create a basic profile or handle as an error
+        // For now, we'll proceed but this indicates an issue with signup flow
+        await updateDoc(userDocRef, { lastLoginAt: serverTimestamp(), isOnline: true }, { merge: true }); // attempt to update or create
       }
 
       toast({

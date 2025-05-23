@@ -3,7 +3,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, User, Search, MessageSquare, Edit3, LogOut, Menu, ShieldCheck, FileWarning, Users as UsersIcon } from 'lucide-react'; // Added UsersIcon
+import { Home, User, Search, MessageSquare, Edit3, LogOut, Menu, ShieldCheck, FileWarning, Users as UsersIcon, BarChart3, Megaphone, Bell } from 'lucide-react'; // Added Bell
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import Logo from '@/components/logo';
@@ -18,16 +18,19 @@ import { useAuth } from '@/hooks/use-auth';
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: Home },
+  { href: '/announcements', label: 'Announcements', icon: Bell }, // Added Announcements
   { href: '/profile', label: 'Profile', icon: User },
   { href: '/search', label: 'Search Users', icon: Search },
   { href: '/chat', label: 'Chats', icon: MessageSquare },
-  { href: '/chat/new-group', label: 'New Group', icon: UsersIcon }, // New Group Link
+  { href: '/chat/new-group', label: 'New Group', icon: UsersIcon },
   { href: '/status/new', label: 'New Status', icon: Edit3 },
 ];
 
 const adminNavItems = [
     { href: '/admin/users', label: 'Manage Users', icon: ShieldCheck },
     { href: '/admin/reports', label: 'Chat Reports', icon: FileWarning },
+    { href: '/admin/analytics', label: 'Analytics', icon: BarChart3 },
+    { href: '/admin/broadcast', label: 'Broadcast', icon: Megaphone },
 ]
 
 export function AppSidebar() {
@@ -59,7 +62,9 @@ export function AppSidebar() {
               onClick={() => setIsMobileMenuOpen(false)}
               className={cn(
                 'flex items-center space-x-3 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-150',
-                (pathname === item.href || (pathname.startsWith(item.href) && item.href !== '/dashboard' && !item.href.startsWith('/admin') && item.href !== '/chat')) || (item.href === '/chat' && (pathname === '/chat' || pathname.startsWith('/chat/'))) && !(item.href === '/chat' && pathname.startsWith('/chat/new-group'))
+                (pathname === item.href || (pathname.startsWith(item.href) && item.href !== '/dashboard' && !item.href.startsWith('/admin') && item.href !== '/chat' && item.href !== '/announcements')) || 
+                (item.href === '/chat' && (pathname === '/chat' || pathname.startsWith('/chat/'))) && !(item.href === '/chat' && pathname.startsWith('/chat/new-group')) ||
+                (item.href === '/announcements' && pathname === '/announcements')
                   ? 'bg-primary/10 text-primary hover:bg-primary/20'
                   : 'text-foreground/70 hover:bg-accent hover:text-accent-foreground'
               )}

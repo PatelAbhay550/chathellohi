@@ -65,8 +65,10 @@ export function SignupForm() {
         isAdmin: false, 
         isDisabled: false, 
         disabledUntil: null,
-        isOnline: false, // Initialize as offline, will be set to true on first login
-        lastSeen: null, // Initialize lastSeen
+        isOnline: false, 
+        lastSeen: null,
+        isPermanentlyBanned: false, // New
+        lastLoginAt: null, // New
       });
 
       toast({

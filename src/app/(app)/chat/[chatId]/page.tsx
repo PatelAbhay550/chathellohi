@@ -15,7 +15,11 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-  DropdownMenuSeparator
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuPortal,
+  DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
 import {
   AlertDialog,
@@ -28,9 +32,9 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Checkbox } from '@/components/ui/checkbox';
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter, SheetTrigger } from '@/components/ui/sheet';
-import { ArrowLeft, Send, Paperclip, Smile, Loader2, Check, CheckCheck, FileText, Image as ImageIcon, XCircle, Music2, Video, MoreVertical, UserX, UserCheck, ShieldAlert, MoreHorizontal, Pin, PinOff, Edit2, Trash2, CornerDownLeft, MessageCircle, Quote, Users, UserPlus, LogOutIcon, Crown, UserMinus } from 'lucide-react';
+
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from '@/components/ui/sheet';
+import { ArrowLeft, Send, Paperclip, Loader2, Check, CheckCheck, FileText, Image as ImageIconLucide, XCircle, Music2, Video, MoreVertical, UserX, UserCheck, ShieldAlert, MoreHorizontal, Pin, PinOff, Edit2, Trash2, CornerDownLeft, MessageCircle, Quote, Users, UserPlus, LogOutIcon, Crown, UserMinus, Search, Smile, Palette, ImagePlus } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import type { ChatMessage, UserProfile, ChatRoom, ChatMessageReportSnippet, ChatMessageReplySnippet } from '@/types';
 import { cn } from '@/lib/utils';
@@ -55,14 +59,19 @@ import {
   where,
   documentId
 } from 'firebase/firestore';
-import { ref as storageRef, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import { useToast } from '@/hooks/use-toast';
 import Link from 'next/link';
 import { format, isToday, isYesterday, differenceInCalendarDays, addHours, addDays, formatDistanceToNowStrict, formatRelative } from 'date-fns';
+import AudioRecorder from '@/components/chat/AudioRecorder';
 
 const MAX_FILE_SIZE_MB = 10;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const MAX_BG_IMAGE_SIZE_MB = 5;
+const MAX_BG_IMAGE_SIZE_BYTES = MAX_BG_IMAGE_SIZE_MB * 1024 * 1024;
+
 const TYPING_TIMEOUT_MS = 3000;
+const COMMON_REACTIONS = ['👍', '❤️', '😂', '🎉', '🤔', '🙏'];
 
 export default function ChatPage() {
   const params = useParams();
@@ -108,11 +117,22 @@ export default function ChatPage() {
   const [userSearchTermForAdding, setUserSearchTermForAdding] = useState('');
   const [isLoadingGroupMembers, setIsLoadingGroupMembers] = useState(false);
 
+  const [showChatSearch, setShowChatSearch] = useState(false);
+  const [chatSearchTerm, setChatSearchTerm] = useState('');
+  const [filteredMessages, setFilteredMessages] = useState<ChatMessage[]>([]);
+
+  const [isBackgroundSheetOpen, setIsBackgroundSheetOpen] = useState(false);
+  const [selectedBgFile, setSelectedBgFile] = useState<File | null>(null);
+  const [bgFilePreview, setBgFilePreview] = useState<string | null>(null);
+  const [isUploadingBg, setIsUploadingBg] = useState(false);
+  const [bgUploadProgress, setBgUploadProgress] = useState<number | null>(null);
+  const bgFileInputRef = useRef<HTMLInputElement>(null);
+
 
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const messageInputRef = useRef<HTMLInputElement>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const previousMessagesRef = useRef<ChatMessage[]>([]);
 
@@ -123,7 +143,7 @@ export default function ChatPage() {
     }
   }, [currentUserProfileDetails]);
 
-  // Effect for deriving typing status from chatRoomData
+
  useEffect(() => {
     if (chatRoomData?.isGroup && chatRoomData.typing && user) {
       const typingUserIds = Object.entries(chatRoomData.typing)
@@ -144,7 +164,6 @@ export default function ChatPage() {
       setGroupTypingUsers([]);
     }
 
-    // Cleanup typing status for current user on unmount or when chat changes
     return () => {
       if (user?.uid && chatId) {
         const chatRoomRef = doc(db, "chat_rooms", chatId);
@@ -166,6 +185,7 @@ export default function ChatPage() {
           updatedAt: serverTimestamp()
         });
       } else {
+        // Using deleteField is cleaner for removing the typing indicator
         await updateDoc(chatRoomRef, {
           [`typing.${user.uid}`]: deleteField(),
         });
@@ -175,7 +195,7 @@ export default function ChatPage() {
     }
   };
 
-  const handleNewMessageChange = (e: ChangeEvent<HTMLInputElement>) => {
+  const handleNewMessageChange = (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setNewMessage(e.target.value);
     if (typingTimerRef.current) {
       clearTimeout(typingTimerRef.current);
@@ -220,12 +240,10 @@ export default function ChatPage() {
       });
     }
 
-
     const unsubscribeChatRoom = onSnapshot(chatRoomDocRef, async (docSnap) => {
       if (docSnap.exists()) {
         const roomData = docSnap.data() as ChatRoom;
 
-        // Process pinnedMessage for client-side state to ensure pinnedUntil is number | null
         if (roomData.pinnedMessage) {
           let processedPinnedUntil: number | null = null;
           if (roomData.pinnedMessage.pinnedUntil instanceof Timestamp) {
@@ -243,7 +261,7 @@ export default function ChatPage() {
         if (!roomData.isGroup) {
             const otherParticipantId = roomData.participants.find(pId => pId !== user.uid);
             if (otherParticipantId) {
-              if (unsubscribeOtherUserProfile) unsubscribeOtherUserProfile();
+              if (unsubscribeOtherUserProfile) unsubscribeOtherUserProfile(); 
               const otherUserDocRef = doc(db, "users", otherParticipantId);
               unsubscribeOtherUserProfile = onSnapshot(otherUserDocRef, (otherUserSnap) => {
                  if (otherUserSnap.exists()) {
@@ -262,11 +280,11 @@ export default function ChatPage() {
                 toast({title: "Error", description: "Failed to load other user details.", variant: "destructive" });
               });
             } else {
-                setOtherUser(null);
+                setOtherUser(null); 
             }
-        } else {
-            setOtherUser(null);
-            if (roomData.participants && roomData.participants.length > 0) {
+        } else { 
+            setOtherUser(null); 
+            if (roomData.participants && roomData.participants.length > 0 && isGroupInfoSheetOpen) {
                 fetchGroupParticipants(roomData.participants);
             }
         }
@@ -294,10 +312,9 @@ export default function ChatPage() {
             status: data.status || 'sent',
             timestamp: (data.timestamp as Timestamp)?.toMillis?.() || data.timestamp || Date.now(),
             editedAt: (data.editedAt as Timestamp)?.toMillis?.() || data.editedAt,
-            // pinnedUntil is processed in room snapshot, so it should be number | null here
-            // If it's coming directly from message doc, ensure conversion
             pinnedUntil: (data.pinnedUntil instanceof Timestamp) ? data.pinnedUntil.toMillis() : (typeof data.pinnedUntil === 'number' ? data.pinnedUntil : null),
             replyTo: data.replyTo || null,
+            reactions: data.reactions || {},
         } as ChatMessage);
       });
 
@@ -315,13 +332,12 @@ export default function ChatPage() {
       if (user && typeof document !== 'undefined' && document.hasFocus()) {
         const batch = writeBatch(db);
         let lastMessageOfTheRoomWasUpdatedToSeen = false;
-        const currentChat = chatRoomData;
-
+        
         fetchedMessagesData.forEach(msg => {
           if (msg.senderId !== user.uid && msg.status !== 'seen') {
             const msgRef = doc(db, "chat_rooms", chatId, "messages", msg.id);
             batch.update(msgRef, { status: 'seen' });
-            if (currentChat?.lastMessageId === msg.id) {
+            if (chatRoomData?.lastMessageId === msg.id) {
               lastMessageOfTheRoomWasUpdatedToSeen = true;
             }
           }
@@ -330,7 +346,7 @@ export default function ChatPage() {
         try {
           if (batch["_mutations" as any].length > 0) {
             await batch.commit();
-            if (lastMessageOfTheRoomWasUpdatedToSeen && currentChat) {
+            if (lastMessageOfTheRoomWasUpdatedToSeen && chatRoomData) {
                await updateDoc(doc(db, "chat_rooms", chatId), {
                  "lastMessage.status": "seen",
                  "updatedAt": serverTimestamp()
@@ -365,9 +381,18 @@ export default function ChatPage() {
     setIsLoadingGroupMembers(true);
     try {
       const usersRef = collection(db, "users");
-      const usersQuery = query(usersRef, where(documentId(), "in", participantIds.slice(0,10)));
-      const snapshot = await getDocs(usersQuery);
-      const members = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile));
+      const participantChunks = [];
+      for (let i = 0; i < participantIds.length; i += 30) {
+        participantChunks.push(participantIds.slice(i, i + 30));
+      }
+      
+      const memberPromises = participantChunks.map(chunk => 
+        getDocs(query(usersRef, where(documentId(), "in", chunk)))
+      );
+      const snapshots = await Promise.all(memberPromises);
+      const members = snapshots.flatMap(snapshot => 
+        snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile))
+      );
       setGroupParticipants(members);
     } catch (error) {
       console.error("Error fetching group participants:", error);
@@ -381,7 +406,7 @@ export default function ChatPage() {
     if (chatRoomData?.isGroup && isGroupInfoSheetOpen && groupParticipants.length === 0 && chatRoomData.participants.length > 0) {
         fetchGroupParticipants(chatRoomData.participants);
     }
-  }, [chatRoomData, isGroupInfoSheetOpen, groupParticipants.length]);
+  }, [chatRoomData, isGroupInfoSheetOpen, groupParticipants.length]); 
 
 
   useEffect(() => {
@@ -395,10 +420,22 @@ export default function ChatPage() {
   }, [currentUserProfile, otherUser, chatRoomData?.isGroup]);
 
   useEffect(() => {
-    if (messagesEndRef.current && !editingMessage && !replyingToMessage) {
+    if (messagesEndRef.current && !editingMessage && !replyingToMessage && !chatSearchTerm) {
         messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, editingMessage, replyingToMessage]);
+  }, [messages, editingMessage, replyingToMessage, chatSearchTerm]);
+
+   useEffect(() => {
+    if (chatSearchTerm.trim() === '') {
+      setFilteredMessages(messages);
+    } else {
+      setFilteredMessages(
+        messages.filter(msg =>
+          msg.text?.toLowerCase().includes(chatSearchTerm.toLowerCase())
+        )
+      );
+    }
+  }, [chatSearchTerm, messages]);
 
 
   const getFileType = (fileName: string): ChatMessage['fileType'] => {
@@ -406,7 +443,7 @@ export default function ChatPage() {
     if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension || '')) return 'image';
     if (extension === 'pdf') return 'pdf';
     if (['doc', 'docx'].includes(extension || '')) return 'doc';
-    if (['mp3', 'wav', 'ogg'].includes(extension || '')) return 'audio';
+    if (['mp3', 'wav', 'ogg', 'm4a', 'webm'].includes(extension || '')) return 'audio';
     if (['mp4', 'webm', 'mov'].includes(extension || '')) return 'video';
     if (extension === 'txt') return 'txt';
     return 'other';
@@ -435,7 +472,7 @@ export default function ChatPage() {
     if (!user || !chatId) return;
     setIsUploadingFile(true);
     setUploadProgress(0);
-    setUploadedFileDetails(null);
+    setUploadedFileDetails(null); 
 
     const uniqueFileName = `${Date.now()}_${file.name}`;
     const fileStorageRef = storageRef(storage, `chat_attachments/${chatId}/${user.uid}/${uniqueFileName}`);
@@ -449,7 +486,7 @@ export default function ChatPage() {
       (error) => {
         console.error("Upload failed:", error);
         toast({ title: 'File Upload Failed', description: error.message, variant: 'destructive' });
-        handleRemoveSelectedFile();
+        handleRemoveSelectedFile(); 
       },
       async () => {
         try {
@@ -464,7 +501,7 @@ export default function ChatPage() {
         } catch (error: any) {
           console.error("Failed to get download URL:", error);
           toast({ title: 'Upload Finalization Failed', description: "Could not get file URL. Please try removing and re-attaching.", variant: 'destructive' });
-          handleRemoveSelectedFile();
+          handleRemoveSelectedFile(); 
         } finally {
           setIsUploadingFile(false);
           setUploadProgress(null);
@@ -480,12 +517,12 @@ export default function ChatPage() {
     setUploadProgress(null);
     setIsUploadingFile(false);
     if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+      fileInputRef.current.value = ''; 
     }
   };
 
-  const handleSendMessage = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleSendMessage = async (e?: FormEvent, audioFileDetails?: { url: string; name: string; type: 'audio'; size: number }) => {
+    if (e) e.preventDefault();
     if (!currentUserProfile || !user) return;
 
     if (!chatRoomData?.isGroup && (amIBlockedByOtherUser || hasCurrentUserBlockedOtherUser)) {
@@ -493,13 +530,15 @@ export default function ChatPage() {
       return;
     }
 
-    if ((!newMessage.trim() && !uploadedFileDetails) || !chatId ) return;
-    if (isUploadingFile) {
+    const currentUploadedFileDetails = audioFileDetails || uploadedFileDetails;
+
+    if ((!newMessage.trim() && !currentUploadedFileDetails) || !chatId ) return;
+    if (isUploadingFile && !audioFileDetails) { 
         toast({ title: "Please wait", description: "File is still uploading.", variant: "default" });
         return;
     }
     setIsSending(true);
-    updateTypingStatus(false);
+    updateTypingStatus(false); 
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
 
     const messageText = newMessage.trim();
@@ -508,20 +547,25 @@ export default function ChatPage() {
       senderId: user.uid,
       senderName: currentUserProfile.name || currentUserProfile.email?.split('@')[0] || 'Me',
       senderProfileImageUrl: currentUserProfile.profileImageUrl || undefined,
-      ...(messageText && { text: messageText }),
-      status: 'sent',
+      status: 'sent', 
       timestamp: serverTimestamp(),
       isDeleted: false,
       editedAt: null,
       isPinned: false,
       replyTo: null,
+      reactions: {},
     };
 
-    if (uploadedFileDetails) {
-      messagePayload.fileUrl = uploadedFileDetails.url;
-      messagePayload.fileName = uploadedFileDetails.name;
-      messagePayload.fileType = uploadedFileDetails.type;
-      messagePayload.fileSize = uploadedFileDetails.size;
+    if (messageText && !audioFileDetails) { 
+        messagePayload.text = messageText;
+    }
+
+
+    if (currentUploadedFileDetails) {
+      messagePayload.fileUrl = currentUploadedFileDetails.url;
+      messagePayload.fileName = currentUploadedFileDetails.name;
+      messagePayload.fileType = currentUploadedFileDetails.type;
+      messagePayload.fileSize = currentUploadedFileDetails.size;
     }
 
     if (replyingToMessage) {
@@ -535,7 +579,7 @@ export default function ChatPage() {
         }
         if (replyingToMessage.fileType) {
             replySnippet.fileType = replyingToMessage.fileType;
-            if (replyingToMessage.fileName) {
+            if (replyingToMessage.fileName) { 
                 replySnippet.fileName = replyingToMessage.fileName.substring(0, 50);
             }
         }
@@ -553,26 +597,30 @@ export default function ChatPage() {
           senderId: messagePayload.senderId,
           senderName: messagePayload.senderName,
           text: messageText.substring(0, 50) || (messagePayload.fileName ? `Sent: ${messagePayload.fileName.substring(0,40)}` : "Sent a file"),
-          timestamp: serverTimestamp(),
-          status: 'sent',
-          ...(uploadedFileDetails && {
-            fileType: uploadedFileDetails.type,
-            fileName: uploadedFileDetails.name?.substring(0,30)
+          timestamp: serverTimestamp(), 
+          status: 'sent', 
+          ...(currentUploadedFileDetails && { 
+            fileType: currentUploadedFileDetails.type,
+            fileName: currentUploadedFileDetails.name?.substring(0,30)
           }),
         },
-        lastMessageId: newDocRef.id,
-        updatedAt: serverTimestamp(),
+        lastMessageId: newDocRef.id, 
+        updatedAt: serverTimestamp(), 
       });
 
       setNewMessage('');
-      handleRemoveSelectedFile();
-      setReplyingToMessage(null);
+      handleRemoveSelectedFile(); 
+      setReplyingToMessage(null); 
     } catch (error) {
         console.error("Error sending message:", error);
         toast({title: "Error", description: "Could not send message.", variant: "destructive" });
     } finally {
         setIsSending(false);
     }
+  };
+
+  const handleSendAudioMessage = (audioDetails: { url: string; name: string; type: 'audio'; size: number }) => {
+    handleSendMessage(undefined, audioDetails);
   };
 
   const handleBlockUser = async () => {
@@ -621,17 +669,18 @@ export default function ChatPage() {
         const reportPayload: Partial<ChatReport> = {
             chatRoomId: chatId,
             reportedByUid: currentUserProfile.uid,
-            reportedUserName: currentUserProfile.name || currentUserProfile.username,
-            timestamp: serverTimestamp() as Timestamp,
-            status: "Pending" as const,
+            reportedUserName: currentUserProfile.name || currentUserProfile.username, 
+            timestamp: serverTimestamp() as Timestamp, 
+            status: "Pending" as const, 
             lastThreeMessages: lastThreeMessages,
             isGroupReport: chatRoomData?.isGroup || false,
         };
         if(chatRoomData?.isGroup) {
-            reportPayload.targetUserName = chatRoomData.groupName;
+            reportPayload.targetUserName = chatRoomData.groupName; 
+            reportPayload.reportedUserUid = chatId; 
         } else if (otherUser) {
             reportPayload.reportedUserUid = otherUser.uid;
-            reportPayload.targetUserName = otherUser.name || otherUser.username;
+            reportPayload.targetUserName = otherUser.name || otherUser.username; 
         }
 
         await addDoc(collection(db, "chat_reports"), reportPayload);
@@ -648,19 +697,24 @@ export default function ChatPage() {
     if (message.senderId !== user?.uid || message.isDeleted) return;
     setEditingMessage(message);
     setEditText(message.text || '');
+    messageInputRef.current?.focus(); 
   };
 
   const handleCancelEdit = () => { setEditingMessage(null); setEditText(''); };
 
   const handleSaveEdit = async () => {
-    if (!editingMessage || !user) return;
-    setIsSending(true);
+    if (!editingMessage || !user || !editText.trim()) return;
+    if (editText.trim() === editingMessage.text) { 
+        handleCancelEdit();
+        return;
+    }
+    setIsSending(true); 
     const messageRef = doc(db, "chat_rooms", chatId, "messages", editingMessage.id);
     try {
-      await updateDoc(messageRef, { text: editText, editedAt: serverTimestamp() });
+      await updateDoc(messageRef, { text: editText.trim(), editedAt: serverTimestamp() });
       if (chatRoomData?.lastMessageId === editingMessage.id) {
         const chatRoomRef = doc(db, "chat_rooms", chatId);
-        await updateDoc(chatRoomRef, { "lastMessage.text": editText.substring(0, 50), "lastMessage.timestamp": serverTimestamp(), updatedAt: serverTimestamp() });
+        await updateDoc(chatRoomRef, { "lastMessage.text": editText.trim().substring(0, 50), "lastMessage.timestamp": serverTimestamp(), updatedAt: serverTimestamp() });
       }
       toast({ title: "Message Edited" });
       handleCancelEdit();
@@ -677,9 +731,9 @@ export default function ChatPage() {
     try {
       await updateDoc(messageRef, {
         text: "This message was deleted", isDeleted: true, fileUrl: deleteField(), fileName: deleteField(),
-        fileType: deleteField(), fileSize: deleteField(), editedAt: serverTimestamp(), replyTo: deleteField(),
+        fileType: deleteField(), fileSize: deleteField(), editedAt: serverTimestamp(), replyTo: deleteField(), reactions: deleteField()
       });
-      if (chatRoomData?.pinnedMessage?.id === message.id) { await handleUnpinMessage(message.id, true); }
+      if (chatRoomData?.pinnedMessage?.id === message.id) { await handleUnpinMessage(message.id, true); } 
       if (chatRoomData?.lastMessageId === message.id) {
         const chatRoomRef = doc(db, "chat_rooms", chatId);
         await updateDoc(chatRoomRef, { "lastMessage.text": "This message was deleted", "lastMessage.fileType": deleteField(), "lastMessage.fileName": deleteField(), "lastMessage.timestamp": serverTimestamp(), updatedAt: serverTimestamp() });
@@ -712,7 +766,7 @@ export default function ChatPage() {
       if (pinnedUntilTimestamp) {
          messageUpdateData.pinnedUntil = pinnedUntilTimestamp;
       } else {
-         messageUpdateData.pinnedUntil = null; // Explicitly set to null for "forever"
+         messageUpdateData.pinnedUntil = null; 
       }
       await updateDoc(messageRef, messageUpdateData);
 
@@ -721,23 +775,23 @@ export default function ChatPage() {
         senderId: messageToPin.senderId, senderName: messageToPin.senderName, timestamp: messageToPin.timestamp, pinnedByUid: currentUserProfile.uid,
       };
 
-      if (messageToPin.fileType) {
+      if (messageToPin.fileType) { 
         pinnedMessageForChatRoom.fileType = messageToPin.fileType;
       }
-      if (messageToPin.fileName && messageToPin.fileType) {
+      if (messageToPin.fileName && messageToPin.fileType) { 
         pinnedMessageForChatRoom.fileName = messageToPin.fileName.substring(0, 50);
       }
 
       if (pinnedUntilTimestamp) {
         pinnedMessageForChatRoom.pinnedUntil = pinnedUntilTimestamp;
       } else {
-        pinnedMessageForChatRoom.pinnedUntil = null; // Explicitly set to null for "forever"
+        pinnedMessageForChatRoom.pinnedUntil = null; 
       }
       await updateDoc(chatRoomRef, { pinnedMessage: pinnedMessageForChatRoom, updatedAt: serverTimestamp() });
       toast({ title: "Message Pinned" });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error pinning message:", error);
-      toast({ title: "Error", description: "Could not pin message.", variant: "destructive" });
+      toast({ title: "Error", description: `Could not pin message: ${error.message}`, variant: "destructive" });
     } finally { setIsSending(false); setMessageToPin(null); }
   };
 
@@ -771,7 +825,7 @@ export default function ChatPage() {
         await updateDoc(chatRoomRef, {
             participants: arrayRemove(currentUserProfile.uid),
             [`participantDetails.${currentUserProfile.uid}`]: deleteField(),
-            admins: arrayRemove(currentUserProfile.uid),
+            admins: arrayRemove(currentUserProfile.uid), 
             updatedAt: serverTimestamp()
         });
         toast({ title: "Left Group", description: `You have left ${chatRoomData.groupName}.`});
@@ -781,7 +835,7 @@ export default function ChatPage() {
         toast({title: "Error", description: "Could not leave group.", variant: "destructive"});
     } finally {
         setIsSending(false);
-        setIsGroupInfoSheetOpen(false);
+        setIsGroupInfoSheetOpen(false); 
     }
   };
 
@@ -802,9 +856,10 @@ export default function ChatPage() {
             [`participantDetails.${userIdToAdd}`]: { name: userToAddProfile.name, profileImageUrl: userToAddProfile.profileImageUrl || '' },
             updatedAt: serverTimestamp()
         });
-        toast({ title: "Member Added", description: `${userToAddProfile.name} has been added to the group.`});
+        const addedUser = allUsersForAdding.find(p => p.uid === userIdToAdd);
+        toast({ title: "Member Added", description: `${addedUser?.name || 'User'} has been added to the group.`});
         fetchGroupParticipants([...(chatRoomData.participants || []), userIdToAdd]);
-        setSelectedUsersForAdding(prev => { const newSet = new Set(prev); newSet.delete(userIdToAdd); return newSet; });
+        setSelectedUsersForAdding(prev => { const newSet = new Set(prev); newSet.delete(userIdToAdd); return newSet; }); 
     } catch (error) {
         console.error("Error adding member:", error);
         toast({title: "Error", description: "Could not add member.", variant: "destructive"});
@@ -819,7 +874,7 @@ export default function ChatPage() {
         return;
     }
     if (chatRoomData.createdBy === userIdToRemove && chatRoomData.admins?.length === 1 && chatRoomData.admins[0] === userIdToRemove) {
-        toast({title: "Error", description: "Cannot remove the original creator if they are the sole admin.", variant: "destructive"});
+        toast({title: "Error", description: "Cannot remove the original creator if they are the sole admin. Promote another admin first or leave the group if you are the creator.", variant: "destructive"});
         return;
     }
 
@@ -829,7 +884,7 @@ export default function ChatPage() {
         await updateDoc(chatRoomRef, {
             participants: arrayRemove(userIdToRemove),
             [`participantDetails.${userIdToRemove}`]: deleteField(),
-            admins: arrayRemove(userIdToRemove),
+            admins: arrayRemove(userIdToRemove), 
             updatedAt: serverTimestamp()
         });
         const removedUser = groupParticipants.find(p => p.uid === userIdToRemove);
@@ -844,24 +899,25 @@ export default function ChatPage() {
   };
 
   useEffect(() => {
-    if (isGroupInfoSheetOpen && chatRoomData?.isGroup && currentUserProfile) {
+    if (isGroupInfoSheetOpen && chatRoomData?.isGroup && currentUserProfile && chatRoomData.admins?.includes(currentUserProfile.uid)) {
         const fetchUsers = async () => {
-            setIsLoadingGroupMembers(true);
+            setIsLoadingGroupMembers(true); 
             try {
                 const usersRef = collection(db, "users");
                 const currentParticipantIds = chatRoomData.participants || [];
                 let q = query(usersRef);
-                if (currentParticipantIds.length > 0 && currentParticipantIds.length <=10) { // Firestore "not-in" limit
-                     q = query(usersRef, where(documentId(), "not-in", currentParticipantIds.slice(0,10)));
-                } else if (currentParticipantIds.length > 10) {
-                    // For more than 10, fetch all and filter client-side (not ideal for huge N)
+                if (currentParticipantIds.length > 0 && currentParticipantIds.length <=30) { 
+                     q = query(usersRef, where(documentId(), "not-in", currentParticipantIds));
                 }
 
                 const querySnapshot = await getDocs(q);
                 let usersData = querySnapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile));
-                if(currentParticipantIds.length > 10) { // Client-side filter if "not-in" wasn't exhaustive
+
+                if(currentParticipantIds.length > 30) { 
                     usersData = usersData.filter(u => !currentParticipantIds.includes(u.uid));
                 }
+                usersData = usersData.filter(u => u.uid !== currentUserProfile.uid); 
+
                 setAllUsersForAdding(usersData);
             } catch (error) {
                 console.error("Error fetching users for adding:", error);
@@ -869,11 +925,126 @@ export default function ChatPage() {
                 setIsLoadingGroupMembers(false);
             }
         };
-        if (chatRoomData.admins?.includes(currentUserProfile.uid)) {
-            fetchUsers();
-        }
+        fetchUsers();
     }
-  }, [isGroupInfoSheetOpen, chatRoomData, currentUserProfile]);
+  }, [isGroupInfoSheetOpen, chatRoomData, currentUserProfile]); 
+
+
+  const handleReaction = async (message: ChatMessage, emoji: string) => {
+    if (!user || !chatId) return;
+
+    const messageRef = doc(db, "chat_rooms", chatId, "messages", message.id);
+    const currentReactions = message.reactions || {};
+    const newReactions = { ...currentReactions };
+
+    if (newReactions[emoji]?.includes(user.uid)) {
+        newReactions[emoji] = newReactions[emoji]?.filter(uid => uid !== user.uid);
+        if (newReactions[emoji]?.length === 0) {
+            delete newReactions[emoji];
+        }
+    } else {
+        Object.keys(newReactions).forEach(existingEmoji => {
+            if (newReactions[existingEmoji]?.includes(user.uid)) {
+                newReactions[existingEmoji] = newReactions[existingEmoji]?.filter(uid => uid !== user.uid);
+                if (newReactions[existingEmoji]?.length === 0) {
+                    delete newReactions[existingEmoji];
+                }
+            }
+        });
+        newReactions[emoji] = [...(newReactions[emoji] || []), user.uid];
+    }
+
+    try {
+        if (Object.keys(newReactions).length === 0) {
+            await updateDoc(messageRef, { reactions: deleteField() });
+        } else {
+            await updateDoc(messageRef, { reactions: newReactions });
+        }
+    } catch (error) {
+        console.error("Error updating reaction:", error);
+        toast({ title: "Reaction Error", description: "Could not update reaction.", variant: "destructive" });
+    }
+  };
+
+  const handleBgFileSelect = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      if (file.size > MAX_BG_IMAGE_SIZE_BYTES) {
+        toast({ title: "Image Too Large", description: `Please select an image smaller than ${MAX_BG_IMAGE_SIZE_MB}MB.`, variant: "destructive" });
+        return;
+      }
+      setSelectedBgFile(file);
+      const reader = new FileReader();
+      reader.onloadend = () => setBgFilePreview(reader.result as string);
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleUploadAndSetBackground = async () => {
+    if (!selectedBgFile || !chatId || !user) return;
+    setIsUploadingBg(true);
+    setBgUploadProgress(0);
+
+    const bgStorageRef = storageRef(storage, `chat_backgrounds/${chatId}/background.${selectedBgFile.name.split('.').pop()}`);
+    const uploadTask = uploadBytesResumable(bgStorageRef, selectedBgFile);
+
+    uploadTask.on('state_changed',
+      (snapshot) => {
+        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+        setBgUploadProgress(progress);
+      },
+      async (error) => {
+        console.error("Background upload failed:", error);
+        toast({ title: 'Background Upload Failed', description: error.message, variant: 'destructive' });
+        setIsUploadingBg(false);
+        setBgUploadProgress(null);
+      },
+      async () => {
+        try {
+          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+          const chatRoomRef = doc(db, "chat_rooms", chatId);
+          await updateDoc(chatRoomRef, { chatBackgroundImageUrl: downloadURL, updatedAt: serverTimestamp() });
+          toast({ title: "Chat Background Updated" });
+          setIsBackgroundSheetOpen(false);
+          setSelectedBgFile(null);
+          setBgFilePreview(null);
+        } catch (error: any) {
+          toast({ title: 'Update Failed', description: "Could not set chat background.", variant: 'destructive' });
+        } finally {
+          setIsUploadingBg(false);
+          setBgUploadProgress(null);
+        }
+      }
+    );
+  };
+
+  const handleRemoveBackground = async () => {
+    if (!chatId) return;
+    setIsUploadingBg(true); 
+    try {
+      const chatRoomRef = doc(db, "chat_rooms", chatId);
+      await updateDoc(chatRoomRef, { chatBackgroundImageUrl: deleteField(), updatedAt: serverTimestamp() });
+      
+      if (chatRoomData?.chatBackgroundImageUrl) {
+        try {
+            const oldBgRef = storageRef(storage, chatRoomData.chatBackgroundImageUrl);
+            await deleteObject(oldBgRef);
+        } catch (storageError: any) {
+            if (storageError.code !== 'storage/object-not-found') {
+                 console.warn("Could not delete old background image from storage:", storageError);
+            }
+        }
+      }
+      toast({ title: "Chat Background Removed" });
+      setIsBackgroundSheetOpen(false);
+      setSelectedBgFile(null); 
+      setBgFilePreview(null);
+    } catch (error) {
+      toast({ title: "Update Failed", description: "Could not remove chat background.", variant: "destructive" });
+    } finally {
+      setIsUploadingBg(false);
+    }
+  };
 
 
   const getInitials = (name?: string) => name ? name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0,2) : 'U';
@@ -885,7 +1056,7 @@ export default function ChatPage() {
     if (msg.fileType === 'image') {
       return (
         <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer" className="block mt-1.5 rounded-md overflow-hidden border max-w-xs">
-          <Image src={msg.fileUrl} alt={msg.fileName} width={200} height={150} className="object-cover" data-ai-hint="chat image" unoptimized={true} />
+          <Image src={msg.fileUrl} alt={msg.fileName} width={200} height={150} className="object-cover" data-ai-hint="chat attachment" unoptimized={true}/>
         </a>
       );
     }
@@ -913,8 +1084,8 @@ export default function ChatPage() {
         </div>
       );
     }
-    let FileIcon = FileText;
-    if (msg.fileType === 'pdf') FileIcon = FileText;
+    let FileIcon = FileText; 
+    if (msg.fileType === 'pdf') FileIcon = FileText; 
 
     return (
       <a href={msg.fileUrl} target="_blank" download={msg.fileName} rel="noopener noreferrer" className={cn(commonFileClasses, "mt-1.5")}>
@@ -928,8 +1099,9 @@ export default function ChatPage() {
   };
 
   const renderReplyPreview = (replyTo: ChatMessageReplySnippet) => {
-    let previewText = replyTo.text || "Attachment";
+    let previewText = replyTo.text || "Attachment"; 
     if (replyTo.fileType === 'image') previewText = `Photo: ${replyTo.fileName || 'Image'}`;
+    else if (replyTo.fileType === 'audio') previewText = `Audio: ${replyTo.fileName || 'Voice message'}`;
     else if (replyTo.fileType) previewText = `File: ${replyTo.fileName || 'File'}`;
 
     return (
@@ -942,15 +1114,43 @@ export default function ChatPage() {
 
   const formatMessageDateSeparator = (timestamp: ChatMessage['timestamp']): string => {
     if (!timestamp) return "";
-    const date = new Date(timestamp as number); // Ensure timestamp is number
+    const date = new Date(timestamp as number); 
     if (isToday(date)) return "Today";
     if (isYesterday(date)) return "Yesterday";
     const diffDays = differenceInCalendarDays(new Date(), date);
-    if (diffDays < 7) return format(date, 'EEEE'); // e.g., Monday
+    if (diffDays < 7) return format(date, 'EEEE'); 
     return format(date, 'dd/MM/yyyy');
   };
 
-  if (isLoading && !messages.length) {
+  const renderReactions = (message: ChatMessage) => {
+    if (!message.reactions || Object.keys(message.reactions).length === 0) return null;
+
+    return (
+      <div className="flex flex-wrap gap-1.5 mt-1.5 pl-1">
+        {Object.entries(message.reactions).map(([emoji, uids]) => {
+          if (uids.length === 0) return null; 
+          const currentUserReacted = user ? uids.includes(user.uid) : false;
+          return (
+            <Button
+              key={emoji}
+              variant="outline"
+              size="xs"
+              onClick={() => handleReaction(message, emoji)}
+              className={cn(
+                "px-1.5 py-0.5 h-auto text-xs rounded-full flex items-center gap-1",
+                currentUserReacted ? "bg-primary/20 border-primary text-primary" : "bg-secondary hover:bg-secondary/80"
+              )}
+            >
+              <span>{emoji}</span>
+              <span className="font-mono text-[0.7rem]">{uids.length}</span>
+            </Button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  if (isLoading && !messages.length) { 
     return (
       <div className="flex flex-col h-full items-center justify-center p-4">
         <Loader2 className="h-12 w-12 animate-spin text-primary" />
@@ -971,13 +1171,25 @@ export default function ChatPage() {
     ? `${groupTypingUsers.slice(0,2).join(', ')}${groupTypingUsers.length > 2 ? ' and others' : ''} typing...`
     : isOtherUserTyping ? 'typing...' : null;
 
-  void 0; // Ensure preceding JS context is closed
+  void 0; 
+
+  const messagesToRender = chatSearchTerm ? filteredMessages : messages;
+
+  const scrollAreaStyle = chatRoomData?.chatBackgroundImageUrl
+    ? {
+        backgroundImage: `linear-gradient(rgba(var(--background-rgb), 0.7), rgba(var(--background-rgb), 0.7)), url(${chatRoomData.chatBackgroundImageUrl})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+      }
+    : {};
+
 
   return (
     <div className="flex flex-col h-[calc(100vh-var(--header-height,4rem)-2rem)] md:h-[calc(100vh-var(--header-height,4rem)-4rem)] bg-card shadow-lg rounded-lg overflow-hidden">
       <header className="flex items-center p-3 border-b border-border">
         <Button variant="ghost" size="icon" className="mr-2" onClick={() => router.back()}> <ArrowLeft className="h-5 w-5" /> </Button>
-        <div className="flex items-center cursor-pointer" onClick={() => chatRoomData?.isGroup && setIsGroupInfoSheetOpen(true)}>
+        <div className={cn("flex items-center cursor-pointer", {"flex-1": showChatSearch})} onClick={() => chatRoomData?.isGroup ? setIsGroupInfoSheetOpen(true) : (otherUser && router.push(`/profile/${otherUser.uid}`))}>
             <Avatar className="h-9 w-9">
               <AvatarImage src={chatDisplayImage || undefined} alt={chatDisplayName} data-ai-hint={chatRoomData?.isGroup ? "group avatar" : "avatar profile"} />
               <AvatarFallback className="bg-muted text-muted-foreground">
@@ -985,22 +1197,37 @@ export default function ChatPage() {
               </AvatarFallback>
             </Avatar>
         </div>
-        <div className="ml-3 flex-1">
-            <p className="font-semibold text-foreground cursor-pointer hover:underline" onClick={() => chatRoomData?.isGroup ? setIsGroupInfoSheetOpen(true) : (otherUser && router.push(`/profile/${otherUser.uid}`))}>
-                {chatDisplayName || 'Chat'}
-            </p>
-            <p className="text-xs text-muted-foreground h-4">
-             {typingDisplay ? (
-                <span className="italic text-primary animate-pulse">{typingDisplay}</span>
-             ) : chatRoomData?.isGroup ? (
-                <span onClick={() => setIsGroupInfoSheetOpen(true)} className="cursor-pointer hover:underline">{chatRoomData.participants.length} members</span>
-             ) : otherUser?.isOnline ? (
-                <span className="text-green-500">Online</span>
-             ) : otherUser?.lastSeen && typeof otherUser.lastSeen === 'number' ? (
-                formatRelative(new Date(otherUser.lastSeen), new Date())
-             ) : ( "Offline" )}
-            </p>
-        </div>
+        {!showChatSearch && (
+          <div className="ml-3 flex-1">
+              <p className="font-semibold text-foreground cursor-pointer hover:underline" onClick={() => chatRoomData?.isGroup ? setIsGroupInfoSheetOpen(true) : (otherUser && router.push(`/profile/${otherUser.uid}`))}>
+                  {chatDisplayName || 'Chat'}
+              </p>
+              <p className="text-xs text-muted-foreground h-4">
+              {typingDisplay ? (
+                  <span className="italic text-primary animate-pulse">{typingDisplay}</span>
+              ) : chatRoomData?.isGroup ? (
+                  <span onClick={() => setIsGroupInfoSheetOpen(true)} className="cursor-pointer hover:underline">{chatRoomData.participants.length} members</span>
+              ) : otherUser?.isOnline ? (
+                  <span className="text-green-500">Online</span>
+              ) : otherUser?.lastSeen && typeof otherUser.lastSeen === 'number' ? (
+                  formatRelative(new Date(otherUser.lastSeen), new Date())
+              ) : ( "Offline" )}
+              </p>
+          </div>
+        )}
+        {showChatSearch && (
+            <Input
+                type="search"
+                placeholder="Search messages..."
+                value={chatSearchTerm}
+                onChange={(e) => setChatSearchTerm(e.target.value)}
+                className="h-9 ml-2 flex-1"
+                autoFocus
+            />
+        )}
+         <Button variant="ghost" size="icon" onClick={() => { setShowChatSearch(prev => !prev); if(showChatSearch) setChatSearchTerm(''); }} className="ml-2">
+            {showChatSearch ? <XCircle className="h-5 w-5" /> : <Search className="h-5 w-5" />}
+        </Button>
         {user && (chatRoomData?.isGroup || otherUser) && currentUserProfile && (
             <DropdownMenu>
                 <DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreVertical className="h-5 w-5" /></Button></DropdownMenuTrigger>
@@ -1010,6 +1237,9 @@ export default function ChatPage() {
                             <Users className="mr-2 h-4 w-4" /> Group Info
                         </DropdownMenuItem>
                     )}
+                    <DropdownMenuItem onClick={() => setIsBackgroundSheetOpen(true)}>
+                        <Palette className="mr-2 h-4 w-4" /> Change Background
+                    </DropdownMenuItem>
                     {!chatRoomData?.isGroup && otherUser && ( hasCurrentUserBlockedOtherUser ? (
                         <DropdownMenuItem onClick={handleUnblockUser} className="text-green-600 focus:text-green-700 focus:bg-green-50"> <UserCheck className="mr-2 h-4 w-4" /> Unblock User </DropdownMenuItem>
                     ) : (
@@ -1017,19 +1247,31 @@ export default function ChatPage() {
                     ))}
                     <DropdownMenuSeparator />
                     <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <DropdownMenuItem onSelect={(e) => e.preventDefault()} disabled={isReportingChat} className="text-amber-600 focus:text-amber-700 focus:bg-amber-50">
-                            {isReportingChat ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldAlert className="mr-2 h-4 w-4" />}
-                            Report {chatRoomData?.isGroup ? "Group" : "Chat"}
-                        </DropdownMenuItem>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Report {chatRoomData?.isGroup ? chatRoomData.groupName : otherUser?.name || 'this user'}?</AlertDialogTitle>
-                          <AlertDialogDescription> Reporting this will send recent messages to administrators for review. This action cannot be undone. </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter> <AlertDialogCancel>Cancel</AlertDialogCancel> <AlertDialogAction onClick={handleReportChat} disabled={isReportingChat} className="bg-destructive hover:bg-destructive/90"> {isReportingChat && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Confirm Report </AlertDialogAction> </AlertDialogFooter>
-                      </AlertDialogContent>
+                        <AlertDialogTrigger asChild>
+                             <DropdownMenuItem onSelect={(e) => e.preventDefault()} disabled={isReportingChat} className="text-amber-600 focus:text-amber-700 focus:bg-amber-50">
+                                {isReportingChat ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldAlert className="mr-2 h-4 w-4" />}
+                                Report {chatRoomData?.isGroup ? "Group" : "Chat"}
+                            </DropdownMenuItem>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                            <AlertDialogHeader>
+                                <AlertDialogTitle>Report this {chatRoomData?.isGroup ? "Group" : "Chat"}?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                This will send a report to the administrators, including the last few messages.
+                                Are you sure you want to proceed?
+                                </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction
+                                    onClick={handleReportChat}
+                                    disabled={isReportingChat}
+                                    className="bg-destructive hover:bg-destructive/80"
+                                >
+                                {isReportingChat ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Report"}
+                                </AlertDialogAction>
+                            </AlertDialogFooter>
+                        </AlertDialogContent>
                     </AlertDialog>
                     {chatRoomData?.isGroup && (
                         <>
@@ -1067,8 +1309,7 @@ export default function ChatPage() {
                 </Button>
             </div>
             <div className="text-xs text-foreground/80 mt-1 pl-6">
-                <span className="font-medium">{chatRoomData.pinnedMessage.senderName}:</span> {chatRoomData.pinnedMessage.text || "Attachment"}
-                {chatRoomData.pinnedMessage.fileType && <span className="italic ml-1">({chatRoomData.pinnedMessage.fileType})</span>}
+                <span className="font-medium">{chatRoomData.pinnedMessage.senderName}:</span> {chatRoomData.pinnedMessage.text || (chatRoomData.pinnedMessage.fileType ? `${chatRoomData.pinnedMessage.fileType.toUpperCase()} File: ${chatRoomData.pinnedMessage.fileName}` : "Attachment")}
             </div>
              {chatRoomData.pinnedMessage.pinnedUntil && typeof chatRoomData.pinnedMessage.pinnedUntil === 'number' && (
                 <p className="text-xs text-primary/70 text-right mt-0.5">
@@ -1078,8 +1319,13 @@ export default function ChatPage() {
         </div>
       )}
 
-      <ScrollArea className="flex-1 p-4 space-y-2" ref={scrollAreaRef}>
-        {messages.map((msg, index) => {
+      <ScrollArea className="flex-1 p-4 space-y-2" ref={scrollAreaRef} style={scrollAreaStyle}>
+        {messagesToRender.length === 0 && chatSearchTerm && (
+            <div className="text-center py-10 text-muted-foreground">
+                No messages found for &quot;{chatSearchTerm}&quot;.
+            </div>
+        )}
+        {messagesToRender.map((msg, index) => {
           const messageDateStr = formatMessageDateSeparator(msg.timestamp);
           const showDateSeparator = messageDateStr !== lastDisplayedDate;
           if (showDateSeparator) { lastDisplayedDate = messageDateStr; }
@@ -1104,7 +1350,7 @@ export default function ChatPage() {
                     isOwnMessage ? "bg-primary text-primary-foreground rounded-br-none" : "bg-secondary text-secondary-foreground rounded-bl-none"
                 )}>
                   {chatRoomData?.isGroup && !isOwnMessage && (
-                      <p className="text-xs font-semibold mb-0.5" style={{color: `hsl(var(--${isOwnMessage ? 'primary-foreground' : 'foreground'})) opacity(0.8)`}}>{senderDisplayName}</p>
+                      <p className="text-xs font-semibold mb-0.5" style={{color: `hsl(var(--${isOwnMessage ? 'primary-foreground' : 'foreground'}))`, opacity: 0.8 }}>{senderDisplayName}</p>
                   )}
                   {msg.replyTo && renderReplyPreview(msg.replyTo)}
                   {editingMessage?.id === msg.id ? (
@@ -1138,48 +1384,79 @@ export default function ChatPage() {
                         {isOwnMessage && msg.status && (
                            <span className="ml-1.5">
                                 {msg.status === 'sent' && <Check className="h-3.5 w-3.5 opacity-70" />}
-                                {msg.status === 'seen' && <CheckCheck className="h-3.5 w-3.5 text-blue-400" />}
+                                {msg.status === 'seen' && <CheckCheck className="h-3.5 w-3.5" />}
                            </span>
                         )}
                     </div>
+                     {renderReactions(msg)}
                 </div>
-                 {user && msg.senderId === user.uid && !msg.isDeleted && (
+                 {user && !msg.isDeleted && (
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100 transition-opacity">
                                 <MoreHorizontal className="h-4 w-4" />
                             </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align={isOwnMessage ? "end" : "start"}>
-                            <DropdownMenuItem onClick={() => handleSetReplyToMessage(msg)} disabled={msg.isDeleted}>
+                            <DropdownMenuItem onClick={() => handleSetReplyToMessage(msg)}>
                                 <CornerDownLeft className="mr-2 h-4 w-4" /> Reply
                             </DropdownMenuItem>
-                            {!msg.fileUrl && (
-                                <DropdownMenuItem onClick={() => handleInitiateEdit(msg)} disabled={msg.isDeleted}>
+                            
+                            <DropdownMenuSub>
+                                <DropdownMenuSubTrigger>
+                                   <Smile className="mr-2 h-4 w-4" /> React
+                                </DropdownMenuSubTrigger>
+                                <DropdownMenuPortal>
+                                <DropdownMenuSubContent className="flex gap-1 p-1">
+                                    {COMMON_REACTIONS.map(emoji => (
+                                        <DropdownMenuItem
+                                            key={emoji}
+                                            onClick={() => handleReaction(msg, emoji)}
+                                            className={cn("p-1.5 rounded-full h-auto w-auto hover:bg-accent",
+                                                msg.reactions?.[emoji]?.includes(user.uid) && "bg-primary/20"
+                                            )}
+                                        >
+                                            <span className="text-lg">{emoji}</span>
+                                        </DropdownMenuItem>
+                                    ))}
+                                </DropdownMenuSubContent>
+                                </DropdownMenuPortal>
+                            </DropdownMenuSub>
+
+                            {msg.senderId === user.uid && !msg.fileUrl && ( 
+                                <DropdownMenuItem onClick={() => handleInitiateEdit(msg)}>
                                 <Edit2 className="mr-2 h-4 w-4" /> Edit
                                 </DropdownMenuItem>
                             )}
-                             {chatRoomData?.pinnedMessage?.id === msg.id ? (
-                                <DropdownMenuItem onClick={() => handleUnpinMessage()} className="text-amber-600 focus:text-amber-700">
-                                    <PinOff className="mr-2 h-4 w-4" /> Unpin
-                                </DropdownMenuItem>
-                            ) : (
-                                <DropdownMenuItem onClick={() => openPinDialog(msg)} disabled={msg.isDeleted} className="text-amber-600 focus:text-amber-700">
-                                    <Pin className="mr-2 h-4 w-4" /> Pin Message
-                                </DropdownMenuItem>
-                            )}
-                            <DropdownMenuSeparator />
-                            <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                    <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={(e) => e.preventDefault()}>
-                                        <Trash2 className="mr-2 h-4 w-4" /> Delete
+                             {(msg.senderId === user.uid || (chatRoomData?.isGroup && chatRoomData.admins?.includes(user.uid))) && ( 
+                                <>
+                                {chatRoomData?.pinnedMessage?.id === msg.id ? (
+                                    <DropdownMenuItem onClick={() => handleUnpinMessage()} className="text-amber-600 focus:text-amber-700">
+                                        <PinOff className="mr-2 h-4 w-4" /> Unpin
                                     </DropdownMenuItem>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                    <AlertDialogHeader><AlertDialogTitle>Delete Message?</AlertDialogTitle><AlertDialogDescription>This action cannot be undone. The message will be removed for everyone.</AlertDialogDescription></AlertDialogHeader>
-                                    <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => handleDeleteMessage(msg)} className="bg-destructive hover:bg-destructive/90">Delete</AlertDialogAction></AlertDialogFooter>
-                                </AlertDialogContent>
-                            </AlertDialog>
+                                ) : (
+                                    <DropdownMenuItem onClick={() => openPinDialog(msg)} className="text-amber-600 focus:text-amber-700">
+                                        <Pin className="mr-2 h-4 w-4" /> Pin Message
+                                    </DropdownMenuItem>
+                                )}
+                                </>
+                            )}
+                            {msg.senderId === user.uid && (
+                                <>
+                                <DropdownMenuSeparator />
+                                <AlertDialog>
+                                    <AlertDialogTrigger asChild>
+                                        <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={(e) => e.preventDefault()}>
+                                            <Trash2 className="mr-2 h-4 w-4" /> Delete
+                                        </DropdownMenuItem>
+                                    </AlertDialogTrigger>
+                                    <AlertDialogContent>
+                                        <AlertDialogHeader><AlertDialogTitle>Delete Message?</AlertDialogTitle><AlertDialogDescription>This action cannot be undone. The message will be removed for everyone.</AlertDialogDescription></AlertDialogHeader>
+                                        <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => handleDeleteMessage(msg)} className="bg-destructive hover:bg-destructive/90">Delete</AlertDialogAction></AlertDialogFooter>
+                                    </AlertDialogContent>
+                                </AlertDialog>
+                                </>
+                            )}
                         </DropdownMenuContent>
                     </DropdownMenu>
                 )}
@@ -1231,7 +1508,7 @@ export default function ChatPage() {
         </div>
       )}
 
-      {(selectedFile || isUploadingFile || uploadProgress !== null) && !isChatDisabled && (
+      {(selectedFile || isUploadingFile || uploadProgress !== null) && !isChatDisabled && !audioRef.current?.src && 
         <div className="p-3 border-t border-border bg-muted/30">
           <div className="flex items-start justify-between">
             <div className="flex items-center space-x-2 overflow-hidden">
@@ -1257,7 +1534,7 @@ export default function ChatPage() {
             <Progress value={uploadProgress} className="h-1.5 mt-1.5" />
           )}
         </div>
-      )}
+      }
 
       <footer className="p-3 border-t border-border">
         <form onSubmit={handleSendMessage} className="flex items-center space-x-2">
@@ -1266,36 +1543,42 @@ export default function ChatPage() {
             ref={fileInputRef}
             onChange={handleFileSelect}
             className="hidden"
-            accept="image/*,application/pdf,.doc,.docx,.txt,audio/*,video/*"
+            accept="image/*,application/pdf,.doc,.docx,.txt,audio/*,video/*" 
             disabled={isChatDisabled}
           />
            <Button type="button" variant="ghost" size="icon" onClick={() => fileInputRef.current?.click()} disabled={isChatDisabled}>
             <Paperclip className="h-5 w-5" />
           </Button>
-          <Input
+          {user && currentUserProfile && chatId && (
+            <AudioRecorder
+              chatId={chatId}
+              currentUserId={user.uid}
+              onSendAudio={handleSendAudioMessage}
+              disabled={isChatDisabled}
+            />
+          )}
+          <Textarea
             ref={messageInputRef}
-            type="text"
             placeholder="Type a message..."
             value={newMessage}
             onChange={handleNewMessageChange}
-            className="flex-1"
+            className="flex-1 resize-none"
+            rows={1}
             disabled={isChatDisabled}
             onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+                if (e.key === 'Enter' && !e.shiftKey) { 
                     e.preventDefault();
                     handleSendMessage(e as unknown as FormEvent);
                 }
             }}
           />
-          <Button type="button" variant="ghost" size="icon" disabled={isChatDisabled}>
-            <Smile className="h-5 w-5" />
-          </Button>
           <Button type="submit" size="icon" disabled={isChatDisabled || (!newMessage.trim() && !uploadedFileDetails)}>
             {isSending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
           </Button>
         </form>
       </footer>
 
+    {/* Group Info Sheet */}
     {chatRoomData?.isGroup && (
       <Sheet open={isGroupInfoSheetOpen} onOpenChange={setIsGroupInfoSheetOpen}>
         <SheetContent className="sm:max-w-md p-0 flex flex-col">
@@ -1311,7 +1594,7 @@ export default function ChatPage() {
             </SheetHeader>
             <ScrollArea className="flex-1 p-4">
                 <h3 className="text-sm font-medium mb-2 text-muted-foreground">Members</h3>
-                {isLoadingGroupMembers && <Loader2 className="animate-spin mx-auto my-4" />}
+                {isLoadingGroupMembers && <div className="flex justify-center py-4"><Loader2 className="animate-spin h-6 w-6 text-primary" /></div>}
                 {!isLoadingGroupMembers && groupParticipants.map(member => (
                     <div key={member.uid} className="flex items-center justify-between py-2 hover:bg-accent/50 px-2 rounded-md">
                         <Link href={`/profile/${member.uid}`} className="flex items-center gap-3" onClick={() => setIsGroupInfoSheetOpen(false)}>
@@ -1326,7 +1609,7 @@ export default function ChatPage() {
                         </Link>
                         <div>
                             {chatRoomData.admins?.includes(member.uid) && <Crown className="h-4 w-4 text-yellow-500 mr-2" title="Admin" />}
-                            {isChatAdmin && member.uid !== currentUserProfile?.uid && (
+                            {isChatAdmin && member.uid !== currentUserProfile?.uid && ( 
                                 <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => handleRemoveMemberFromGroup(member.uid)} title="Remove member">
                                     <UserMinus className="h-4 w-4" />
                                 </Button>
@@ -1344,10 +1627,12 @@ export default function ChatPage() {
                           value={userSearchTermForAdding}
                           onChange={(e) => setUserSearchTermForAdding(e.target.value)}
                           className="mb-2"
+                          icon={<Search className="h-4 w-4 text-muted-foreground"/>}
                         />
                         <ScrollArea className="h-40 border rounded-md p-1">
-                          {allUsersForAdding.filter(u =>
-                            !chatRoomData.participants.includes(u.uid) &&
+                          {isLoadingGroupMembers && <div className="flex justify-center py-4"><Loader2 className="animate-spin h-5 w-5 text-primary" /></div>}
+                          {!isLoadingGroupMembers && allUsersForAdding.filter(u =>
+                            !chatRoomData.participants.includes(u.uid) && 
                             (u.name?.toLowerCase().includes(userSearchTermForAdding.toLowerCase()) || u.username?.toLowerCase().includes(userSearchTermForAdding.toLowerCase()))
                           ).map(userToAdd => (
                             <div key={userToAdd.uid} className="flex items-center justify-between p-1.5 hover:bg-accent rounded-md">
@@ -1363,6 +1648,10 @@ export default function ChatPage() {
                                 </Button>
                             </div>
                           ))}
+                           {!isLoadingGroupMembers && allUsersForAdding.filter(u =>
+                            !chatRoomData.participants.includes(u.uid) &&
+                            (u.name?.toLowerCase().includes(userSearchTermForAdding.toLowerCase()) || u.username?.toLowerCase().includes(userSearchTermForAdding.toLowerCase()))
+                          ).length === 0 && <p className="text-xs text-muted-foreground text-center py-2">No users found or all users added.</p>}
                         </ScrollArea>
                     </div>
                 )}
@@ -1386,6 +1675,55 @@ export default function ChatPage() {
         </SheetContent>
       </Sheet>
     )}
+
+    <Sheet open={isBackgroundSheetOpen} onOpenChange={setIsBackgroundSheetOpen}>
+        <SheetContent className="sm:max-w-md">
+          <SheetHeader>
+            <SheetTitle>Change Chat Background</SheetTitle>
+            <SheetDescription>
+              Personalize your chat by setting a custom background image. Max {MAX_BG_IMAGE_SIZE_MB}MB.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="py-4 space-y-4">
+            <div>
+              <label htmlFor="bg-image-upload" className="block text-sm font-medium text-foreground mb-1">
+                Upload New Background
+              </label>
+              <Input
+                id="bg-image-upload"
+                ref={bgFileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleBgFileSelect}
+                className="mb-2"
+              />
+              {bgFilePreview && (
+                <div className="my-2 border rounded-md overflow-hidden max-w-xs mx-auto">
+                  <Image src={bgFilePreview} alt="Background preview" width={200} height={150} className="object-contain w-full h-auto" data-ai-hint="background image preview"/>
+                </div>
+              )}
+              {isUploadingBg && bgUploadProgress !== null && (
+                <Progress value={bgUploadProgress} className="h-2 mt-2" />
+              )}
+            </div>
+            {selectedBgFile && ( 
+                <Button onClick={handleUploadAndSetBackground} disabled={isUploadingBg || !selectedBgFile} className="w-full">
+                    {isUploadingBg ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImagePlus className="mr-2 h-4 w-4" />}
+                    Set Background
+                </Button>
+            )}
+            {chatRoomData?.chatBackgroundImageUrl && !selectedBgFile && ( 
+                <Button variant="outline" onClick={handleRemoveBackground} disabled={isUploadingBg} className="w-full">
+                    <XCircle className="mr-2 h-4 w-4" />
+                    Remove Custom Background
+                </Button>
+            )}
+          </div>
+          <SheetFooter>
+            <Button variant="ghost" onClick={() => setIsBackgroundSheetOpen(false)}>Cancel</Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

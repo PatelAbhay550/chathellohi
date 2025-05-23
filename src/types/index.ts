@@ -13,8 +13,10 @@ export interface UserProfile {
   isAdmin?: boolean;
   isDisabled?: boolean;
   disabledUntil?: Timestamp | number | string | null;
-  isOnline?: boolean; 
-  lastSeen?: Timestamp | number | string | null; 
+  isOnline?: boolean;
+  lastSeen?: Timestamp | number | string | null;
+  isPermanentlyBanned?: boolean; // New: For permanent bans
+  lastLoginAt?: Timestamp | number | string | null; // New: To track last login
 }
 
 export interface StatusUpdate {
@@ -46,8 +48,9 @@ export interface ChatRoom {
   updatedAt: string | number | Timestamp;
   lastMessage?: Partial<ChatMessage> | null;
   lastMessageId?: string;
-  pinnedMessage?: (Partial<ChatMessage> & { id: string }) | null;
+  pinnedMessage?: (Partial<ChatMessage> & { id: string; fileType?: ChatMessage['fileType']; fileName?: string; }) | null;
   typing?: Record<string, boolean>;
+  chatBackgroundImageUrl?: string | null; // URL for custom chat background
 
   // Group specific fields
   isGroup?: boolean;
@@ -66,9 +69,9 @@ export interface ChatMessageReplySnippet {
   messageId: string;
   senderId: string;
   senderName: string;
-  text?: string; 
-  fileType?: ChatMessage['fileType']; 
-  fileName?: string; 
+  text?: string;
+  fileType?: ChatMessage['fileType'];
+  fileName?: string;
 }
 
 export interface ChatMessage {
@@ -89,10 +92,11 @@ export interface ChatMessage {
   isPinned?: boolean;
   pinnedByUid?: string;
   pinnedUntil?: Timestamp | number | string | null;
-  replyTo?: ChatMessageReplySnippet | null; 
+  replyTo?: ChatMessageReplySnippet | null;
+  reactions?: Record<string, string[]>; // e.g. { "👍": ["uid1", "uid2"], "❤️": ["uid1"] }
 }
 
-export interface ChatMessageReportSnippet { 
+export interface ChatMessageReportSnippet {
   senderId: string;
   senderName: string;
   text?: string;
@@ -108,11 +112,18 @@ export interface ChatReport {
   reportedByUid: string;
   reportedUserName?: string;
   // For P2P, this is the other user. For group, this might be the group itself or a specific member.
-  // Let's simplify for now and assume reportedUserUid is N/A for group reports, or refers to the group ID.
-  reportedUserUid?: string; 
+  reportedUserUid?: string;
   targetUserName?: string; // Or group name
   timestamp: Timestamp;
   status: ReportStatus;
   lastThreeMessages: ChatMessageReportSnippet[]; // Or relevant messages from group
-  adminNotes?: string;
+  adminNotes?: string; // New: For admin notes on a report
+}
+
+export interface Announcement {
+  id: string;
+  text: string;
+  createdAt: Timestamp;
+  sentByUid: string; // Admin UID
+  sentByName: string; // Admin Name (denormalized for easy display if needed later)
 }

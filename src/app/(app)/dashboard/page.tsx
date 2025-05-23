@@ -4,20 +4,20 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { MessageSquareText, Users, Image as ImageIconLucide, Heart, FileText, Bell, Loader2 } from "lucide-react"; // Added Loader2
+import { MessageSquareText, Users, Image as ImageIconLucide, Heart, FileText, Bell, Loader2, Search as SearchIcon } from "lucide-react";
 import Image from "next/image";
 import type { StatusUpdate, UserProfile, ChatRoom, DashboardChatRoomDisplay, ChatMessage } from "@/types";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { db } from "@/lib/firebase";
-import { collection, query, orderBy, limit, getDocs, where, doc, updateDoc, arrayUnion, arrayRemove, getDoc, Timestamp, onSnapshot, documentId } from "firebase/firestore"; // Added documentId
+import { collection, query, orderBy, limit, getDocs, where, doc, updateDoc, arrayUnion, arrayRemove, getDoc, Timestamp, onSnapshot, documentId } from "firebase/firestore";
 import Link from "next/link";
 import { useRouter } from 'next/navigation';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog"; // Added Dialog components
-import { ScrollArea } from "@/components/ui/scroll-area"; // Added ScrollArea
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -167,7 +167,6 @@ export default function DashboardPage() {
       if (alreadyLiked) {
         await updateDoc(statusRef, { likes: arrayRemove(user.uid) });
         setStatusUpdates(prev => prev.map(s => s.id === statusId ? { ...s, likes: s.likes?.filter(uid => uid !== user.uid) } : s));
-        // Update selectedStatusForLikers if it's the one being unliked by the current user
         if (selectedStatusForLikers?.id === statusId) {
             setSelectedStatusForLikers(prevStatus => prevStatus ? ({
                 ...prevStatus,
@@ -181,7 +180,6 @@ export default function DashboardPage() {
         const currentUserProfileData = currentUserProfileDoc.exists() ? { uid: user.uid, ...currentUserProfileDoc.data()} as UserProfile : null;
 
         setStatusUpdates(prev => prev.map(s => s.id === statusId ? { ...s, likes: [...(s.likes || []), user.uid] } : s));
-         // Update selectedStatusForLikers if it's the one being liked by the current user
         if (selectedStatusForLikers?.id === statusId && currentUserProfileData) {
              setSelectedStatusForLikers(prevStatus => prevStatus ? ({
                 ...prevStatus,
@@ -207,7 +205,6 @@ export default function DashboardPage() {
     setSelectedStatusForLikers(status);
     setIsLikersDialogOpen(true);
     try {
-      // Firestore 'in' query limit is 30
       const likerUids = status.likes.slice(0, 30);
       const usersQuery = query(collection(db, "users"), where(documentId(), "in", likerUids));
       const querySnapshot = await getDocs(usersQuery);
@@ -258,14 +255,16 @@ export default function DashboardPage() {
          <Card className="shadow-lg hover:shadow-xl transition-shadow duration-300 md:col-span-1 lg:col-span-1">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                Your Contacts
+                Find & Connect
               </CardTitle>
-              <Users className="h-5 w-5 text-green-500" />
+              <SearchIcon className="h-5 w-5 text-green-500" />
             </CardHeader>
             <CardContent>
-                <p className="text-sm text-muted-foreground">Connect with users by searching for them.</p>
-                <Button asChild size="sm" className="mt-2">
-                    <Link href="/search">Find Users</Link>
+                <p className="text-sm text-muted-foreground">Search for users by username and start new conversations.</p>
+                <Button asChild size="sm" className="mt-3">
+                    <Link href="/search">
+                        <SearchIcon className="mr-2 h-4 w-4" /> Search Users
+                    </Link>
                 </Button>
             </CardContent>
         </Card>
@@ -305,7 +304,7 @@ export default function DashboardPage() {
                   {chat.otherParticipant && (
                     <div
                       onClick={(e) => {
-                        e.preventDefault(); // Prevent outer Link navigation
+                        e.preventDefault(); 
                         e.stopPropagation();
                         router.push(`/profile/${chat.otherParticipant!.uid}`);
                       }}
@@ -329,7 +328,7 @@ export default function DashboardPage() {
                   <div className="flex-1 min-w-0">
                     <div
                        onClick={(e) => {
-                        e.preventDefault(); // Prevent outer Link navigation
+                        e.preventDefault(); 
                         e.stopPropagation();
                         if (chat.otherParticipant) {
                            router.push(`/profile/${chat.otherParticipant.uid}`);
@@ -464,7 +463,7 @@ export default function DashboardPage() {
           <DialogHeader>
             <DialogTitle>Liked by ({selectedStatusForLikers?.likes?.length || 0})</DialogTitle>
           </DialogHeader>
-          <ScrollArea className="h-72 max-h-[60vh] my-4"> {/* Added my-4 for spacing */}
+          <ScrollArea className="h-72 max-h-[60vh] my-4"> 
             {loadingLikers ? (
               <div className="flex justify-center items-center h-full py-10">
                 <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -480,7 +479,7 @@ export default function DashboardPage() {
                     <Link
                         href={`/profile/${liker.uid}`}
                         className="text-sm font-medium hover:underline"
-                        onClick={() => setIsLikersDialogOpen(false)} // Close dialog on click
+                        onClick={() => setIsLikersDialogOpen(false)} 
                     >
                       {liker.name || liker.username || 'User'}
                     </Link>
