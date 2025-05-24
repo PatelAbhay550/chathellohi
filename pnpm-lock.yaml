@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+       '@ducanh2912/next-pwa':
+         specifier: ^10.2.7
+         version: 10.2.7
       '@genkit-ai/googleai':
         specifier: ^1.8.0
         version: 1.10.0(genkit@1.10.0)
